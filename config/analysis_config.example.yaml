@@ -1,0 +1,15 @@
+﻿project:
+  name: football_tactical_analytics
+
+data:
+  root: data
+
+scope:
+  competition_id: 2
+  season_id: 44
+  team_name: null
+  include_360: true
+
+outputs:
+  figures_dir: outputs/python_figures
+  tables_dir: outputs/tables

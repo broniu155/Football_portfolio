@@ -1,0 +1,21 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Output artifacts
+outputs/python_figures/*
+!outputs/python_figures/.gitkeep
+outputs/tables/*
+!outputs/tables/.gitkeep
+
+# Power BI generated artifacts
+*.pbix.autosave
+
+# OS
+.DS_Store
+Thumbs.db

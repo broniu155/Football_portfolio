@@ -1,0 +1,6 @@
+﻿pandas>=2.2.0
+numpy>=1.26.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+mplsoccer>=1.2.4
+pyyaml>=6.0.1
