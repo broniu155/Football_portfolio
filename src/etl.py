@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -63,24 +65,19 @@ KEY_NULL_COLUMNS = {
     "players": ["player_id", "team_id"],
 }
 
-COORDINATE_KEYS = {
-    "location",
-    "pass_end_location",
-    "carry_end_location",
-    "shot_end_location",
-}
-
+COORDINATE_KEYS = {"location", "pass_end_location", "carry_end_location", "shot_end_location"}
 PROCESSORS = ["events", "competitions", "matches", "lineups", "three-sixty"]
+PROCESSOR_TABLES = {
+    "events": ["events"],
+    "competitions": ["competitions"],
+    "matches": ["matches"],
+    "lineups": ["lineups_players"],
+    "three-sixty": ["three_sixty", "three_sixty_freeze_frames", "three_sixty_visible_area"],
+}
 
 
 class ProgressPrinter:
-    def __init__(
-        self,
-        total_files: int,
-        phase: str,
-        log_every_files: int,
-        log_every_rows: int,
-    ) -> None:
+    def __init__(self, total_files: int, phase: str, log_every_files: int, log_every_rows: int) -> None:
         self.total_files = max(total_files, 1)
         self.phase = phase
         self.log_every_files = max(1, log_every_files)
@@ -90,114 +87,98 @@ class ProgressPrinter:
         self.last_row_log = 0
 
     @staticmethod
-    def _format_elapsed(seconds: float) -> str:
+    def _fmt_elapsed(seconds: float) -> str:
         total = int(seconds)
-        hh = total // 3600
-        mm = (total % 3600) // 60
-        ss = total % 60
-        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+        return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
 
     def maybe_log(self, file_count: int, row_count: int, force: bool = False) -> None:
-        should_log = force
-        if file_count - self.last_file_log >= self.log_every_files:
-            should_log = True
-        if row_count - self.last_row_log >= self.log_every_rows:
-            should_log = True
-        if not should_log:
+        should = force or (file_count - self.last_file_log >= self.log_every_files) or (
+            row_count - self.last_row_log >= self.log_every_rows
+        )
+        if not should:
             return
-
         elapsed = time.perf_counter() - self.start
         rate = row_count / elapsed if elapsed > 0 else 0.0
         print(
             f"[{self.phase}] Processed files: {file_count}/{self.total_files} "
-            f"| rows: {row_count:,} "
-            f"| rate: {rate:,.0f} rows/s "
-            f"| elapsed: {self._format_elapsed(elapsed)}"
+            f"| rows: {row_count:,} | rate: {rate:,.0f} rows/s | elapsed: {self._fmt_elapsed(elapsed)}"
         )
         self.last_file_log = file_count
         self.last_row_log = row_count
 
 
 class QualityTracker:
-    def __init__(self, key_columns: Iterable[str], sample_limit: int | None = None) -> None:
+    def __init__(self, key_columns: Iterable[str], sample_limit: int | None) -> None:
         self.key_columns = list(key_columns)
         self.sample_limit = sample_limit
         self.row_count = 0
         self.sampled_rows = 0
-        self.null_counts = {col: 0 for col in self.key_columns}
-
-    @staticmethod
-    def _is_null(value: Any) -> bool:
-        return value in (None, "")
+        self.null_counts = {c: 0 for c in self.key_columns}
 
     def update(self, row: dict[str, Any]) -> None:
         self.row_count += 1
         if self.sample_limit is not None and self.sampled_rows >= self.sample_limit:
             return
         self.sampled_rows += 1
-        for col in self.key_columns:
-            if self._is_null(row.get(col, "")):
-                self.null_counts[col] += 1
+        for c in self.key_columns:
+            if row.get(c, "") in (None, ""):
+                self.null_counts[c] += 1
 
-    def null_rates(self, available_columns: set[str]) -> dict[str, str]:
-        rates: dict[str, str] = {}
-        for col in self.key_columns:
-            if col not in available_columns:
-                rates[col] = "column missing"
+    def null_rates(self, available: set[str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for c in self.key_columns:
+            if c not in available:
+                out[c] = "column missing"
             elif self.sampled_rows == 0:
-                rates[col] = "not computed"
+                out[c] = "not computed"
             else:
-                rates[col] = f"{(self.null_counts[col] / self.sampled_rows) * 100:.2f}%"
-        return rates
+                out[c] = f"{(self.null_counts[c] / self.sampled_rows) * 100:.2f}%"
+        return out
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Process StatsBomb JSON folders to flat CSV outputs with data quality reporting."
-    )
-    parser.add_argument("--input-dir", default="data_raw", help="Input root directory.")
-    parser.add_argument("--output-dir", default="data_processed", help="Output CSV directory.")
-    parser.add_argument("--report-path", default="reports/data_quality.md", help="Markdown data quality report path.")
-    parser.add_argument("--max-files", type=int, default=None, help="Optional limit of JSON files per processor.")
-    parser.add_argument("--log-every-files", type=int, default=50, help="Progress log interval in files.")
-    parser.add_argument("--log-every-rows", type=int, default=100000, help="Progress log interval in rows.")
-    parser.add_argument(
-        "--report-sample-rows",
-        type=int,
-        default=None,
-        help="Optional per-table sample row cap for null-rate stats.",
-    )
-    parser.add_argument(
-        "--include",
-        default=None,
-        help="Comma-separated processors to run: events,competitions,matches,lineups,three-sixty",
-    )
-    parser.add_argument("--exclude", default=None, help="Comma-separated processors to skip.")
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="StatsBomb ETL with resilient loading and incremental processing")
+    p.add_argument("--input-dir", default="data_raw")
+    p.add_argument("--output-dir", default="data_processed")
+    p.add_argument("--report-path", default="reports/data_quality.md")
+    p.add_argument("--max-files", type=int, default=None)
+    p.add_argument("--log-every-files", type=int, default=50)
+    p.add_argument("--log-every-rows", type=int, default=100000)
+    p.add_argument("--report-sample-rows", type=int, default=None)
+    p.add_argument("--include", default=None)
+    p.add_argument("--exclude", default=None)
+    p.add_argument("--strict-json", action="store_true", help="Fail fast on malformed JSON")
+    p.add_argument("--quarantine-dir", default="reports/quarantine")
+    p.add_argument("--state-path", default=None, help="Defaults to <output-dir>/.etl_state.json")
+    p.add_argument("--incremental", dest="incremental", action="store_true")
+    p.add_argument("--no-incremental", dest="incremental", action="store_false")
+    p.set_defaults(incremental=True)
+    p.add_argument("--force", action="store_true", help="Ignore state and process all files")
+    p.add_argument("--append", dest="append", action="store_true")
+    p.add_argument("--no-append", dest="append", action="store_false")
+    p.set_defaults(append=True)
+    p.add_argument("--state-hash", action="store_true", help="Include SHA1 in incremental fingerprint")
+    return p.parse_args()
 
 
 def parse_processor_list(raw: str | None) -> set[str]:
     if raw is None or raw.strip() == "":
         return set()
-    values = {x.strip() for x in raw.split(",") if x.strip()}
-    invalid = sorted(values - set(PROCESSORS))
+    vals = {x.strip() for x in raw.split(",") if x.strip()}
+    invalid = sorted(vals - set(PROCESSORS))
     if invalid:
-        raise ValueError(f"Unknown processor(s): {invalid}. Valid processors: {PROCESSORS}")
-    return values
+        raise ValueError(f"Unknown processor(s): {invalid}. Valid: {PROCESSORS}")
+    return vals
 
 
-def should_run_processor(name: str, include: set[str], exclude: set[str]) -> bool:
+def should_run(name: str, include: set[str], exclude: set[str]) -> bool:
     if include and name not in include:
         return False
-    if name in exclude:
-        return False
-    return True
+    return name not in exclude
 
 
 def maybe_limit(files: list[Path], max_files: int | None) -> list[Path]:
-    if max_files is not None and max_files > 0:
-        return files[:max_files]
-    return files
+    return files[:max_files] if max_files is not None and max_files > 0 else files
 
 
 def resolve_events_files(input_dir: Path, max_files: int | None) -> list[Path]:
@@ -208,19 +189,19 @@ def resolve_events_files(input_dir: Path, max_files: int | None) -> list[Path]:
 
 def resolve_competitions_files(input_dir: Path, max_files: int | None) -> list[Path]:
     files: list[Path] = []
-    direct = input_dir / "competitions.json"
-    if direct.exists():
-        files.append(direct)
-    folder = input_dir / "competitions"
-    if folder.exists():
-        files.extend(sorted(folder.rglob("*.json")))
-    unique: list[Path] = []
+    cjson = input_dir / "competitions.json"
+    if cjson.exists():
+        files.append(cjson)
+    cdir = input_dir / "competitions"
+    if cdir.exists():
+        files.extend(sorted(cdir.rglob("*.json")))
     seen: set[Path] = set()
-    for file in files:
-        if file not in seen:
-            seen.add(file)
-            unique.append(file)
-    return maybe_limit(unique, max_files)
+    uniq: list[Path] = []
+    for f in files:
+        if f not in seen:
+            seen.add(f)
+            uniq.append(f)
+    return maybe_limit(uniq, max_files)
 
 
 def resolve_recursive_json(input_dir: Path, folder: str, max_files: int | None) -> list[Path]:
@@ -229,14 +210,68 @@ def resolve_recursive_json(input_dir: Path, folder: str, max_files: int | None) 
     return maybe_limit(files, max_files)
 
 
-def load_json_records(path: Path) -> list[dict[str, Any]]:
-    with path.open("r", encoding="utf-8-sig") as f:
-        obj = json.load(f)
-    if isinstance(obj, list):
-        return [x for x in obj if isinstance(x, dict)]
-    if isinstance(obj, dict):
-        return [obj]
-    return []
+def rel_key(path: Path, input_root: Path) -> str:
+    try:
+        return path.relative_to(input_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 1, "files": {}}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"version": 1, "files": {}}
+        data.setdefault("version", 1)
+        data.setdefault("files", {})
+        return data
+    except Exception:
+        return {"version": 1, "files": {}}
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+
+def file_fingerprint(path: Path, use_hash: bool) -> dict[str, Any]:
+    st = path.stat()
+    fp = {"size_bytes": int(st.st_size), "mtime": int(st.st_mtime)}
+    if use_hash:
+        h = hashlib.sha1()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        fp["sha1"] = h.hexdigest()
+    return fp
+
+
+def filter_incremental_files(
+    processor: str,
+    files: list[Path],
+    input_root: Path,
+    state: dict[str, Any],
+    incremental: bool,
+    force: bool,
+    state_hash: bool,
+) -> tuple[list[Path], dict[str, dict[str, Any]], int]:
+    proc_state = state.get("files", {}).get(processor, {}) if isinstance(state.get("files"), dict) else {}
+    to_process: list[Path] = []
+    fingerprints: dict[str, dict[str, Any]] = {}
+    skipped_unchanged = 0
+    for path in files:
+        rel = rel_key(path, input_root)
+        fp = file_fingerprint(path, state_hash)
+        fingerprints[rel] = fp
+        if incremental and not force and proc_state.get(rel) == fp:
+            skipped_unchanged += 1
+            continue
+        to_process.append(path)
+    return to_process, fingerprints, skipped_unchanged
 
 
 def parse_numeric_stem(path: Path) -> int | None:
@@ -250,21 +285,20 @@ def is_numeric_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(v, (int, float)) for v in value)
 
 
-def flatten_json(source: dict[str, Any], parent_key: str = "", split_coordinate_lists: bool = True) -> dict[str, Any]:
+def flatten_json(source: dict[str, Any], parent_key: str = "") -> dict[str, Any]:
     flat: dict[str, Any] = {}
     for key, value in source.items():
         out_key = f"{parent_key}_{key}" if parent_key else key
         if isinstance(value, dict):
-            flat.update(flatten_json(value, out_key, split_coordinate_lists))
+            flat.update(flatten_json(value, out_key))
             continue
-        if split_coordinate_lists and is_numeric_list(value) and len(value) in (2, 3):
-            is_coordinate = out_key in COORDINATE_KEYS or out_key.endswith("_location")
+        if is_numeric_list(value) and len(value) in (2, 3):
+            is_coord = out_key in COORDINATE_KEYS or out_key.endswith("_location")
             flat[out_key] = json.dumps(value)
-            if is_coordinate:
-                axis_names = ["x", "y", "z"]
+            if is_coord:
+                axes = ["x", "y", "z"]
                 for idx, item in enumerate(value):
-                    suffix = axis_names[idx] if idx < len(axis_names) else f"coord_{idx + 1}"
-                    flat[f"{out_key}_{suffix}"] = item
+                    flat[f"{out_key}_{axes[idx] if idx < 3 else f'coord_{idx + 1}'}"] = item
             continue
         if isinstance(value, list):
             flat[out_key] = json.dumps(value)
@@ -285,17 +319,51 @@ def safe_int(value: Any) -> int | None:
             return None
 
 
-def write_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+def existing_header(path: Path) -> list[str] | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        return next(reader, None)
+
+
+def open_csv_writer(path: Path, fieldnames: list[str], append: bool) -> tuple[Any, csv.DictWriter]:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    use_append = append and path.exists()
+    mode = "a" if use_append else "w"
+    f = path.open(mode, encoding="utf-8", newline="")
+    w = csv.DictWriter(f, fieldnames=fieldnames)
+    if not use_append:
+        w.writeheader()
+    return f, w
 
 
-def update_team_player_from_row(
-    row: dict[str, Any], teams: dict[int, str], players: dict[int, tuple[str, int | None]]
+def load_existing_dimensions(
+    output_dir: Path,
+    teams: dict[int, str],
+    players: dict[int, tuple[str, int | None]],
 ) -> None:
+    teams_path = output_dir / "teams.csv"
+    players_path = output_dir / "players.csv"
+
+    if teams_path.exists():
+        with teams_path.open("r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                team_id = safe_int(row.get("team_id"))
+                if team_id is not None:
+                    teams[team_id] = str(row.get("team_name") or "")
+
+    if players_path.exists():
+        with players_path.open("r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                player_id = safe_int(row.get("player_id"))
+                if player_id is None:
+                    continue
+                team_id = safe_int(row.get("team_id"))
+                players[player_id] = (str(row.get("player_name") or ""), team_id)
+
+
+def update_team_player_from_row(row: dict[str, Any], teams: dict[int, str], players: dict[int, tuple[str, int | None]]) -> None:
     team_id = safe_int(row.get("team_id"))
     if team_id is not None:
         teams[team_id] = str(row.get("team_name") or "")
@@ -304,310 +372,361 @@ def update_team_player_from_row(
         players[player_id] = (str(row.get("player_name") or ""), team_id)
 
 
-def finalize_table_quality(
-    table_name: str, row_count: int, available_columns: set[str], tracker: QualityTracker
-) -> dict[str, Any]:
-    required = REQUIRED_COLUMNS.get(table_name, [])
-    missing = [c for c in required if c not in available_columns]
+def finalize_table_quality(table: str, rows_written: int, available_columns: set[str], tracker: QualityTracker) -> dict[str, Any]:
+    missing = [c for c in REQUIRED_COLUMNS.get(table, []) if c not in available_columns]
     return {
-        "table": table_name,
-        "row_count": row_count,
-        "available_columns": available_columns,
+        "table": table,
+        "row_count": rows_written,
         "missing_required": missing,
         "null_rates": tracker.null_rates(available_columns),
         "sampled_rows": tracker.sampled_rows,
     }
 
 
-def normalize_event_record(record: dict[str, Any], match_id: int) -> dict[str, Any]:
-    row = flatten_json(record)
-    if "id" in row and "event_id" not in row:
-        row["event_id"] = row.pop("id")
-    if "index" in row and "event_index" not in row:
-        row["event_index"] = row.pop("index")
-    row["match_id"] = match_id
-    for col in ["match_id", "team_id", "player_id", "type_id", "minute", "second"]:
-        row[col] = safe_int(row.get(col))
-    return row
+def quarantine_file(path: Path, quarantine_dir: Path, processor: str) -> None:
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = path.name.replace(":", "_")
+    dst = quarantine_dir / processor / safe_name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(path, dst)
+    except Exception:
+        pass
+
+
+def load_json_records(
+    path: Path,
+    *,
+    strict_json: bool,
+    quarantine_dir: Path,
+    processor: str,
+    parse_failure_counter: dict[str, int],
+    failed_files: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    try:
+        if path.stat().st_size == 0:
+            raise ValueError("empty file")
+        with path.open("r", encoding="utf-8-sig") as f:
+            obj = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, IOError, ValueError) as exc:
+        parse_failure_counter[processor] = parse_failure_counter.get(processor, 0) + 1
+        if failed_files is not None:
+            failed_files.add(str(path))
+        print(f"[WARN] Failed to parse JSON: {path} | {exc} | skipping file")
+        quarantine_file(path, quarantine_dir, processor)
+        if strict_json:
+            raise
+        return []
+
+    if isinstance(obj, list):
+        return [x for x in obj if isinstance(x, dict)]
+    if isinstance(obj, dict):
+        return [obj]
+    return []
 
 def process_events(
     input_dir: Path,
     output_dir: Path,
-    max_files: int | None,
-    log_every_files: int,
-    log_every_rows: int,
-    sample_rows: int | None,
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    parse_failures: dict[str, int],
     teams: dict[int, str],
     players: dict[int, tuple[str, int | None]],
-) -> dict[str, Any] | None:
-    files = resolve_events_files(input_dir, max_files)
-    if not files:
-        print("[events] skipping folder events (no files found)")
-        return None
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    proc = "events"
+    all_files = resolve_events_files(input_dir, args.max_files)
+    to_process, fingerprints, skipped_unchanged = filter_incremental_files(
+        proc, all_files, input_dir, state, args.incremental, args.force, args.state_hash
+    )
+    print(f"[events] Found: {len(all_files)} files | Skipping unchanged: {skipped_unchanged} | Processing: {len(to_process)}")
+    summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
+    if not to_process:
+        return [], summary, {}
+    failed_files: set[str] = set()
+    failed_files: set[str] = set()
 
-    all_columns: set[str] = set()
-    unique_matches: set[int] = set()
-    rows_pass1 = 0
-
-    logger1 = ProgressPrinter(len(files), "events pass 1/2", log_every_files, log_every_rows)
-    for idx, path in enumerate(files, start=1):
-        match_id = parse_numeric_stem(path)
-        if match_id is None:
+    # pass 1: schema + dims
+    cols: set[str] = set()
+    logger1 = ProgressPrinter(len(to_process), "events pass 1/2", args.log_every_files, args.log_every_rows)
+    row_count = 0
+    for i, path in enumerate(to_process, start=1):
+        mid = parse_numeric_stem(path)
+        if mid is None:
             raise ValueError(f"Cannot parse match_id from filename: {path.name}")
-        unique_matches.add(match_id)
-        for record in load_json_records(path):
-            row = normalize_event_record(record, match_id)
-            all_columns.update(row.keys())
-            rows_pass1 += 1
+        for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+            row = flatten_json(rec)
+            row["match_id"] = mid
+            if "id" in row and "event_id" not in row:
+                row["event_id"] = row.pop("id")
+            if "index" in row and "event_index" not in row:
+                row["event_index"] = row.pop("index")
+            for c in ["match_id", "team_id", "player_id", "type_id", "minute", "second"]:
+                row[c] = safe_int(row.get(c))
+            cols.update(row.keys())
             update_team_player_from_row(row, teams, players)
-        logger1.maybe_log(idx, rows_pass1)
-    logger1.maybe_log(len(files), rows_pass1, force=True)
+            row_count += 1
+        logger1.maybe_log(i, row_count)
+    logger1.maybe_log(len(to_process), row_count, force=True)
 
-    missing_required = [c for c in REQUIRED_COLUMNS["events"] if c not in all_columns]
-    if missing_required:
-        raise ValueError(f"[events] missing required columns after flattening: {missing_required}")
+    missing = [c for c in REQUIRED_COLUMNS[proc] if c not in cols]
+    if missing:
+        raise ValueError(f"[events] missing required columns after flattening: {missing}")
 
     preferred = [
-        "event_id",
-        "match_id",
-        "event_index",
-        "period",
-        "timestamp",
-        "minute",
-        "second",
-        "team_id",
-        "team_name",
-        "player_id",
-        "player_name",
-        "type_id",
-        "type_name",
-        "location",
-        "location_x",
-        "location_y",
-        "location_z",
-        "pass_end_location",
-        "pass_end_location_x",
-        "pass_end_location_y",
-        "pass_end_location_z",
+        "event_id", "match_id", "event_index", "period", "timestamp", "minute", "second", "team_id", "team_name",
+        "player_id", "player_name", "type_id", "type_name", "location", "location_x", "location_y", "location_z",
+        "pass_end_location", "pass_end_location_x", "pass_end_location_y", "pass_end_location_z",
     ]
-    ordered = [c for c in preferred if c in all_columns] + sorted(c for c in all_columns if c not in preferred)
+    header = existing_header(output_dir / "events.csv") if args.append else None
+    ordered = header if header else ([c for c in preferred if c in cols] + sorted(c for c in cols if c not in preferred))
 
-    output_path = output_dir / "events.csv"
-    tracker = QualityTracker(KEY_NULL_COLUMNS["events"], sample_rows)
+    tracker = QualityTracker(KEY_NULL_COLUMNS[proc], args.report_sample_rows)
     rows_written = 0
-    logger2 = ProgressPrinter(len(files), "events pass 2/2", log_every_files, log_every_rows)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as f_out:
-        writer = csv.DictWriter(f_out, fieldnames=ordered)
-        writer.writeheader()
-        for idx, path in enumerate(files, start=1):
-            match_id = int(path.stem)
-            for record in load_json_records(path):
-                row = normalize_event_record(record, match_id)
-                out = {col: row.get(col, "") for col in ordered}
-                writer.writerow(out)
+    logger2 = ProgressPrinter(len(to_process), "events pass 2/2", args.log_every_files, args.log_every_rows)
+    f, w = open_csv_writer(output_dir / "events.csv", ordered, args.append)
+    try:
+        for i, path in enumerate(to_process, start=1):
+            mid = int(path.stem)
+            for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+                row = flatten_json(rec)
+                row["match_id"] = mid
+                if "id" in row and "event_id" not in row:
+                    row["event_id"] = row.pop("id")
+                if "index" in row and "event_index" not in row:
+                    row["event_index"] = row.pop("index")
+                for c in ["match_id", "team_id", "player_id", "type_id", "minute", "second"]:
+                    row[c] = safe_int(row.get(c))
+                out = {c: row.get(c, "") for c in ordered}
+                w.writerow(out)
                 tracker.update(out)
                 rows_written += 1
-            logger2.maybe_log(idx, rows_written)
-    logger2.maybe_log(len(files), rows_written, force=True)
+            logger2.maybe_log(i, rows_written)
+    finally:
+        f.close()
+    logger2.maybe_log(len(to_process), rows_written, force=True)
 
-    return {
-        **finalize_table_quality("events", rows_written, set(ordered), tracker),
-        "output": str(output_path),
-        "files_processed": len(files),
-        "unique_matches": len(unique_matches),
+    tables = [finalize_table_quality(proc, rows_written, set(ordered), tracker)]
+    tables[0]["output"] = str(output_dir / "events.csv")
+    return tables, summary, {
+        rel_key(p, input_dir): fingerprints[rel_key(p, input_dir)]
+        for p in to_process
+        if str(p) not in failed_files
     }
 
 
-def normalize_competition_row(row: dict[str, Any]) -> dict[str, Any]:
-    out = dict(row)
-    if "season_id" not in out:
-        out["season_id"] = out.get("season_season_id")
-    if "season_name" not in out:
-        out["season_name"] = out.get("season_season_name")
-    if "competition_id" not in out:
-        out["competition_id"] = out.get("competition_competition_id")
-    if "competition_name" not in out:
-        out["competition_name"] = out.get("competition_competition_name")
-    if "country_name" not in out:
-        out["country_name"] = out.get("country_name") or out.get("competition_country_name")
-    return out
+def _scan_table_schema(
+    files: list[Path],
+    processor: str,
+    args: argparse.Namespace,
+    parse_failures: dict[str, int],
+    row_fn,
+) -> set[str]:
+    cols: set[str] = set()
+    logger = ProgressPrinter(len(files), f"{processor} schema", args.log_every_files, args.log_every_rows)
+    rows = 0
+    for i, path in enumerate(files, start=1):
+        for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=processor, parse_failure_counter=parse_failures):
+            row = row_fn(path, rec)
+            cols.update(row.keys())
+            rows += 1
+        logger.maybe_log(i, rows)
+    logger.maybe_log(len(files), rows, force=True)
+    return cols
 
 
-def process_competitions(
-    input_dir: Path,
-    output_dir: Path,
-    max_files: int | None,
-    log_every_files: int,
-    log_every_rows: int,
-    sample_rows: int | None,
-) -> dict[str, Any] | None:
-    files = resolve_competitions_files(input_dir, max_files)
-    if not files:
-        print("[competitions] skipping folder competitions (no files found)")
-        return None
+def process_competitions(input_dir: Path, output_dir: Path, args: argparse.Namespace, state: dict[str, Any], parse_failures: dict[str, int]) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    proc = "competitions"
+    all_files = resolve_competitions_files(input_dir, args.max_files)
+    to_process, fingerprints, skipped_unchanged = filter_incremental_files(proc, all_files, input_dir, state, args.incremental, args.force, args.state_hash)
+    print(f"[competitions] Found: {len(all_files)} files | Skipping unchanged: {skipped_unchanged} | Processing: {len(to_process)}")
+    summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
+    if not to_process:
+        return [], summary, {}
+    failed_files: set[str] = set()
 
-    rows: list[dict[str, Any]] = []
-    columns: set[str] = set()
-    tracker = QualityTracker(KEY_NULL_COLUMNS["competitions"], sample_rows)
-    row_count = 0
-    logger = ProgressPrinter(len(files), "competitions", log_every_files, log_every_rows)
+    def mk_row(_: Path, rec: dict[str, Any]) -> dict[str, Any]:
+        row = flatten_json(rec)
+        row.setdefault("season_id", row.get("season_season_id"))
+        row.setdefault("season_name", row.get("season_season_name"))
+        row.setdefault("competition_id", row.get("competition_competition_id"))
+        row.setdefault("competition_name", row.get("competition_competition_name"))
+        row.setdefault("country_name", row.get("competition_country_name") or row.get("country_name"))
+        return row
 
-    for idx, path in enumerate(files, start=1):
-        for record in load_json_records(path):
-            row = normalize_competition_row(flatten_json(record))
-            rows.append(row)
-            columns.update(row.keys())
-            tracker.update(row)
-            row_count += 1
-        logger.maybe_log(idx, row_count)
-    logger.maybe_log(len(files), row_count, force=True)
+    header = existing_header(output_dir / "competitions.csv") if args.append else None
+    if header:
+        ordered = header
+    else:
+        cols = _scan_table_schema(to_process, proc, args, parse_failures, mk_row)
+        pref = REQUIRED_COLUMNS[proc]
+        ordered = [c for c in pref if c in cols] + sorted(c for c in cols if c not in pref)
 
-    preferred = REQUIRED_COLUMNS["competitions"]
-    ordered = [c for c in preferred if c in columns] + sorted(c for c in columns if c not in preferred)
-    output_path = output_dir / "competitions.csv"
-    write_rows(output_path, ordered, [{c: row.get(c, "") for c in ordered} for row in rows])
+    tracker = QualityTracker(KEY_NULL_COLUMNS[proc], args.report_sample_rows)
+    rows_written = 0
+    logger = ProgressPrinter(len(to_process), proc, args.log_every_files, args.log_every_rows)
+    f, w = open_csv_writer(output_dir / "competitions.csv", ordered, args.append)
+    try:
+        for i, path in enumerate(to_process, start=1):
+            for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+                out = {c: mk_row(path, rec).get(c, "") for c in ordered}
+                w.writerow(out)
+                tracker.update(out)
+                rows_written += 1
+            logger.maybe_log(i, rows_written)
+    finally:
+        f.close()
+    logger.maybe_log(len(to_process), rows_written, force=True)
 
-    return {
-        **finalize_table_quality("competitions", row_count, set(ordered), tracker),
-        "output": str(output_path),
-        "files_processed": len(files),
+    table = finalize_table_quality(proc, rows_written, set(ordered), tracker)
+    table["output"] = str(output_dir / "competitions.csv")
+    return [table], summary, {
+        rel_key(p, input_dir): fingerprints[rel_key(p, input_dir)]
+        for p in to_process
+        if str(p) not in failed_files
     }
-
-
-def normalize_match_row(row: dict[str, Any]) -> dict[str, Any]:
-    out = dict(row)
-    out["match_id"] = safe_int(out.get("match_id") or out.get("match_match_id"))
-    out["competition_id"] = safe_int(out.get("competition_id") or out.get("competition_competition_id"))
-    out["season_id"] = safe_int(out.get("season_id") or out.get("season_season_id"))
-    out["home_team_id"] = safe_int(out.get("home_team_id") or out.get("home_team_home_team_id"))
-    out["home_team_name"] = out.get("home_team_name") or out.get("home_team_home_team_name") or ""
-    out["away_team_id"] = safe_int(out.get("away_team_id") or out.get("away_team_away_team_id"))
-    out["away_team_name"] = out.get("away_team_name") or out.get("away_team_away_team_name") or ""
-    return out
 
 
 def process_matches(
     input_dir: Path,
     output_dir: Path,
-    max_files: int | None,
-    log_every_files: int,
-    log_every_rows: int,
-    sample_rows: int | None,
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    parse_failures: dict[str, int],
     teams: dict[int, str],
-) -> dict[str, Any] | None:
-    files = resolve_recursive_json(input_dir, "matches", max_files)
-    if not files:
-        print("[matches] skipping folder matches (no files found)")
-        return None
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    proc = "matches"
+    all_files = resolve_recursive_json(input_dir, "matches", args.max_files)
+    to_process, fingerprints, skipped_unchanged = filter_incremental_files(proc, all_files, input_dir, state, args.incremental, args.force, args.state_hash)
+    print(f"[matches] Found: {len(all_files)} files | Skipping unchanged: {skipped_unchanged} | Processing: {len(to_process)}")
+    summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
+    if not to_process:
+        return [], summary, {}
+    failed_files: set[str] = set()
 
-    rows: list[dict[str, Any]] = []
-    columns: set[str] = set()
-    tracker = QualityTracker(KEY_NULL_COLUMNS["matches"], sample_rows)
-    row_count = 0
-    logger = ProgressPrinter(len(files), "matches", log_every_files, log_every_rows)
+    def mk_row(_: Path, rec: dict[str, Any]) -> dict[str, Any]:
+        row = flatten_json(rec)
+        row["match_id"] = safe_int(row.get("match_id") or row.get("match_match_id"))
+        row["competition_id"] = safe_int(row.get("competition_id") or row.get("competition_competition_id"))
+        row["season_id"] = safe_int(row.get("season_id") or row.get("season_season_id"))
+        row["home_team_id"] = safe_int(row.get("home_team_id") or row.get("home_team_home_team_id"))
+        row["home_team_name"] = row.get("home_team_name") or row.get("home_team_home_team_name") or ""
+        row["away_team_id"] = safe_int(row.get("away_team_id") or row.get("away_team_away_team_id"))
+        row["away_team_name"] = row.get("away_team_name") or row.get("away_team_away_team_name") or ""
+        return row
 
-    for idx, path in enumerate(files, start=1):
-        for record in load_json_records(path):
-            row = normalize_match_row(flatten_json(record))
-            rows.append(row)
-            columns.update(row.keys())
-            tracker.update(row)
-            row_count += 1
+    header = existing_header(output_dir / "matches.csv") if args.append else None
+    if header:
+        ordered = header
+    else:
+        cols = _scan_table_schema(to_process, proc, args, parse_failures, mk_row)
+        pref = REQUIRED_COLUMNS[proc]
+        ordered = [c for c in pref if c in cols] + sorted(c for c in cols if c not in pref)
 
-            home_id = safe_int(row.get("home_team_id"))
-            away_id = safe_int(row.get("away_team_id"))
-            if home_id is not None:
-                teams[home_id] = str(row.get("home_team_name") or "")
-            if away_id is not None:
-                teams[away_id] = str(row.get("away_team_name") or "")
-        logger.maybe_log(idx, row_count)
-    logger.maybe_log(len(files), row_count, force=True)
+    tracker = QualityTracker(KEY_NULL_COLUMNS[proc], args.report_sample_rows)
+    rows_written = 0
+    logger = ProgressPrinter(len(to_process), proc, args.log_every_files, args.log_every_rows)
+    f, w = open_csv_writer(output_dir / "matches.csv", ordered, args.append)
+    try:
+        for i, path in enumerate(to_process, start=1):
+            for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+                row = mk_row(path, rec)
+                hid, aid = safe_int(row.get("home_team_id")), safe_int(row.get("away_team_id"))
+                if hid is not None:
+                    teams[hid] = str(row.get("home_team_name") or "")
+                if aid is not None:
+                    teams[aid] = str(row.get("away_team_name") or "")
+                out = {c: row.get(c, "") for c in ordered}
+                w.writerow(out)
+                tracker.update(out)
+                rows_written += 1
+            logger.maybe_log(i, rows_written)
+    finally:
+        f.close()
+    logger.maybe_log(len(to_process), rows_written, force=True)
 
-    preferred = REQUIRED_COLUMNS["matches"]
-    ordered = [c for c in preferred if c in columns] + sorted(c for c in columns if c not in preferred)
-    output_path = output_dir / "matches.csv"
-    write_rows(output_path, ordered, [{c: row.get(c, "") for c in ordered} for row in rows])
-
-    return {
-        **finalize_table_quality("matches", row_count, set(ordered), tracker),
-        "output": str(output_path),
-        "files_processed": len(files),
+    table = finalize_table_quality(proc, rows_written, set(ordered), tracker)
+    table["output"] = str(output_dir / "matches.csv")
+    return [table], summary, {
+        rel_key(p, input_dir): fingerprints[rel_key(p, input_dir)]
+        for p in to_process
+        if str(p) not in failed_files
     }
 
 def process_lineups(
     input_dir: Path,
     output_dir: Path,
-    max_files: int | None,
-    log_every_files: int,
-    log_every_rows: int,
-    sample_rows: int | None,
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    parse_failures: dict[str, int],
     teams: dict[int, str],
     players: dict[int, tuple[str, int | None]],
-) -> dict[str, Any] | None:
-    files = resolve_recursive_json(input_dir, "lineups", max_files)
-    if not files:
-        print("[lineups] skipping folder lineups (no files found)")
-        return None
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    proc = "lineups"
+    table_name = "lineups_players"
+    all_files = resolve_recursive_json(input_dir, "lineups", args.max_files)
+    to_process, fingerprints, skipped_unchanged = filter_incremental_files(proc, all_files, input_dir, state, args.incremental, args.force, args.state_hash)
+    print(f"[lineups] Found: {len(all_files)} files | Skipping unchanged: {skipped_unchanged} | Processing: {len(to_process)}")
+    summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
+    if not to_process:
+        return [], summary, {}
+    failed_files: set[str] = set()
 
-    output_path = output_dir / "lineups_players.csv"
-    fields = REQUIRED_COLUMNS["lineups_players"]
-    tracker = QualityTracker(KEY_NULL_COLUMNS["lineups_players"], sample_rows)
-    logger = ProgressPrinter(len(files), "lineups", log_every_files, log_every_rows)
-    row_count = 0
+    fields = REQUIRED_COLUMNS[table_name]
+    header = existing_header(output_dir / "lineups_players.csv") if args.append else None
+    ordered = header if header else fields
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as f_out:
-        writer = csv.DictWriter(f_out, fieldnames=fields)
-        writer.writeheader()
-        for idx, path in enumerate(files, start=1):
-            match_id = parse_numeric_stem(path)
-            for team_record in load_json_records(path):
+    tracker = QualityTracker(KEY_NULL_COLUMNS[table_name], args.report_sample_rows)
+    rows_written = 0
+    logger = ProgressPrinter(len(to_process), proc, args.log_every_files, args.log_every_rows)
+    f, w = open_csv_writer(output_dir / "lineups_players.csv", ordered, args.append)
+    try:
+        for i, path in enumerate(to_process, start=1):
+            mid = parse_numeric_stem(path)
+            for team_record in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
                 team_id = safe_int(team_record.get("team_id") or team_record.get("team", {}).get("id"))
                 team_name = str(team_record.get("team_name") or team_record.get("team", {}).get("name") or "")
                 if team_id is not None:
                     teams[team_id] = team_name
-
                 lineup = team_record.get("lineup")
                 if not isinstance(lineup, list):
                     continue
                 for player in lineup:
                     if not isinstance(player, dict):
                         continue
-                    positions = player.get("positions") if isinstance(player.get("positions"), list) else []
-                    first_pos = positions[0] if positions and isinstance(positions[0], dict) else {}
-
-                    start_reason = str(first_pos.get("start_reason") or "")
-                    starter = start_reason == "Starting XI"
+                    pos = player.get("positions") if isinstance(player.get("positions"), list) else []
+                    first = pos[0] if pos and isinstance(pos[0], dict) else {}
                     player_id = safe_int(player.get("player_id"))
                     player_name = str(player.get("player_name") or "")
                     if player_id is not None:
                         players[player_id] = (player_name, team_id)
-
                     row = {
-                        "match_id": "" if match_id is None else match_id,
+                        "match_id": "" if mid is None else mid,
                         "team_id": "" if team_id is None else team_id,
                         "team_name": team_name,
                         "player_id": "" if player_id is None else player_id,
                         "player_name": player_name,
                         "jersey_number": player.get("jersey_number", ""),
-                        "position_id": first_pos.get("position_id", ""),
-                        "position_name": first_pos.get("position", ""),
-                        "from": first_pos.get("from", ""),
-                        "to": first_pos.get("to", ""),
-                        "starter": starter,
+                        "position_id": first.get("position_id", ""),
+                        "position_name": first.get("position", ""),
+                        "from": first.get("from", ""),
+                        "to": first.get("to", ""),
+                        "starter": str(first.get("start_reason") or "") == "Starting XI",
                     }
-                    writer.writerow(row)
-                    tracker.update(row)
-                    row_count += 1
-            logger.maybe_log(idx, row_count)
-    logger.maybe_log(len(files), row_count, force=True)
+                    out = {c: row.get(c, "") for c in ordered}
+                    w.writerow(out)
+                    tracker.update(out)
+                    rows_written += 1
+            logger.maybe_log(i, rows_written)
+    finally:
+        f.close()
+    logger.maybe_log(len(to_process), rows_written, force=True)
 
-    return {
-        **finalize_table_quality("lineups_players", row_count, set(fields), tracker),
-        "output": str(output_path),
-        "files_processed": len(files),
+    table = finalize_table_quality(table_name, rows_written, set(ordered), tracker)
+    table["output"] = str(output_dir / "lineups_players.csv")
+    return [table], summary, {
+        rel_key(p, input_dir): fingerprints[rel_key(p, input_dir)]
+        for p in to_process
+        if str(p) not in failed_files
     }
 
 
@@ -622,189 +741,186 @@ def get_event_uuid(row: dict[str, Any]) -> str:
 def process_three_sixty(
     input_dir: Path,
     output_dir: Path,
-    max_files: int | None,
-    log_every_files: int,
-    log_every_rows: int,
-    sample_rows: int | None,
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    parse_failures: dict[str, int],
     players: dict[int, tuple[str, int | None]],
-) -> dict[str, Any] | None:
-    files = resolve_recursive_json(input_dir, "three-sixty", max_files)
-    if not files:
-        print("[three-sixty] skipping folder three-sixty (no files found)")
-        return None
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, dict[str, Any]]]:
+    proc = "three-sixty"
+    all_files = resolve_recursive_json(input_dir, "three-sixty", args.max_files)
+    to_process, fingerprints, skipped_unchanged = filter_incremental_files(proc, all_files, input_dir, state, args.incremental, args.force, args.state_hash)
+    print(f"[three-sixty] Found: {len(all_files)} files | Skipping unchanged: {skipped_unchanged} | Processing: {len(to_process)}")
+    summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
+    if not to_process:
+        return [], summary, {}
 
-    schema_cols: set[str] = set()
-    pass1_rows = 0
-    logger1 = ProgressPrinter(len(files), "three-sixty pass 1/2", log_every_files, log_every_rows)
-    for idx, path in enumerate(files, start=1):
-        match_id = parse_numeric_stem(path)
-        for record in load_json_records(path):
-            row = flatten_json(record)
-            row["match_id"] = "" if match_id is None else match_id
+    # schema pass only for changed files
+    cols: set[str] = set()
+    logger1 = ProgressPrinter(len(to_process), "three-sixty schema", args.log_every_files, args.log_every_rows)
+    rows = 0
+    for i, path in enumerate(to_process, start=1):
+        mid = parse_numeric_stem(path)
+        for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+            row = flatten_json(rec)
+            row["match_id"] = "" if mid is None else mid
             row["event_uuid"] = get_event_uuid(row)
-            schema_cols.update(row.keys())
-            pass1_rows += 1
-        logger1.maybe_log(idx, pass1_rows)
-    logger1.maybe_log(len(files), pass1_rows, force=True)
+            cols.update(row.keys())
+            rows += 1
+        logger1.maybe_log(i, rows)
+    logger1.maybe_log(len(to_process), rows, force=True)
 
-    preferred = ["match_id", "event_uuid"]
-    fields_main = [c for c in preferred if c in schema_cols] + sorted(c for c in schema_cols if c not in preferred)
-    fields_ff = ["match_id", "event_uuid", "player_id", "teammate", "actor", "keeper", "location", "location_x", "location_y"]
-    fields_vis = ["match_id", "event_uuid", "visible_area", "visible_area_point_count"]
+    header_main = existing_header(output_dir / "three_sixty.csv") if args.append else None
+    fields_main = header_main if header_main else ([c for c in ["match_id", "event_uuid"] if c in cols] + sorted(c for c in cols if c not in {"match_id", "event_uuid"}))
+    fields_ff = existing_header(output_dir / "three_sixty_freeze_frames.csv") if args.append else None
+    if not fields_ff:
+        fields_ff = ["match_id", "event_uuid", "player_id", "teammate", "actor", "keeper", "location", "location_x", "location_y"]
+    fields_vis = existing_header(output_dir / "three_sixty_visible_area.csv") if args.append else None
+    if not fields_vis:
+        fields_vis = ["match_id", "event_uuid", "visible_area", "visible_area_point_count"]
 
-    out_main = output_dir / "three_sixty.csv"
-    out_ff = output_dir / "three_sixty_freeze_frames.csv"
-    out_vis = output_dir / "three_sixty_visible_area.csv"
+    t_main = QualityTracker(KEY_NULL_COLUMNS["three_sixty"], args.report_sample_rows)
+    t_ff = QualityTracker(KEY_NULL_COLUMNS["three_sixty_freeze_frames"], args.report_sample_rows)
+    t_vis = QualityTracker(KEY_NULL_COLUMNS["three_sixty_visible_area"], args.report_sample_rows)
 
-    tracker_main = QualityTracker(KEY_NULL_COLUMNS["three_sixty"], sample_rows)
-    tracker_ff = QualityTracker(KEY_NULL_COLUMNS["three_sixty_freeze_frames"], sample_rows)
-    tracker_vis = QualityTracker(KEY_NULL_COLUMNS["three_sixty_visible_area"], sample_rows)
-
-    count_main = 0
-    count_ff = 0
-    count_vis = 0
-    logger2 = ProgressPrinter(len(files), "three-sixty pass 2/2", log_every_files, log_every_rows)
-
-    out_main.parent.mkdir(parents=True, exist_ok=True)
-    with out_main.open("w", encoding="utf-8", newline="") as f_main, out_ff.open(
-        "w", encoding="utf-8", newline=""
-    ) as f_ff, out_vis.open("w", encoding="utf-8", newline="") as f_vis:
-        writer_main = csv.DictWriter(f_main, fieldnames=fields_main)
-        writer_ff = csv.DictWriter(f_ff, fieldnames=fields_ff)
-        writer_vis = csv.DictWriter(f_vis, fieldnames=fields_vis)
-        writer_main.writeheader()
-        writer_ff.writeheader()
-        writer_vis.writeheader()
-
-        for idx, path in enumerate(files, start=1):
-            match_id = parse_numeric_stem(path)
-            for record in load_json_records(path):
-                flat = flatten_json(record)
+    c_main = c_ff = c_vis = 0
+    logger2 = ProgressPrinter(len(to_process), "three-sixty write", args.log_every_files, args.log_every_rows)
+    f_main, w_main = open_csv_writer(output_dir / "three_sixty.csv", fields_main, args.append)
+    f_ff, w_ff = open_csv_writer(output_dir / "three_sixty_freeze_frames.csv", fields_ff, args.append)
+    f_vis, w_vis = open_csv_writer(output_dir / "three_sixty_visible_area.csv", fields_vis, args.append)
+    try:
+        for i, path in enumerate(to_process, start=1):
+            mid = parse_numeric_stem(path)
+            for rec in load_json_records(path, strict_json=args.strict_json, quarantine_dir=Path(args.quarantine_dir), processor=proc, parse_failure_counter=parse_failures, failed_files=failed_files):
+                flat = flatten_json(rec)
                 event_uuid = get_event_uuid(flat)
-                flat["match_id"] = "" if match_id is None else match_id
+                flat["match_id"] = "" if mid is None else mid
                 flat["event_uuid"] = event_uuid
-                main_row = {col: flat.get(col, "") for col in fields_main}
-                writer_main.writerow(main_row)
-                tracker_main.update(main_row)
-                count_main += 1
 
-                freeze = record.get("freeze_frame")
-                if isinstance(freeze, list):
-                    for ff in freeze:
+                row_main = {c: flat.get(c, "") for c in fields_main}
+                w_main.writerow(row_main)
+                t_main.update(row_main)
+                c_main += 1
+
+                ff_list = rec.get("freeze_frame")
+                if isinstance(ff_list, list):
+                    for ff in ff_list:
                         if not isinstance(ff, dict):
                             continue
-                        ff_flat = flatten_json(ff)
-                        ff_row = {
-                            "match_id": "" if match_id is None else match_id,
+                        fff = flatten_json(ff)
+                        row_ff = {
+                            "match_id": "" if mid is None else mid,
                             "event_uuid": event_uuid,
-                            "player_id": safe_int(ff_flat.get("player_id")),
-                            "teammate": ff_flat.get("teammate", ""),
-                            "actor": ff_flat.get("actor", ""),
-                            "keeper": ff_flat.get("keeper", ""),
-                            "location": ff_flat.get("location", ""),
-                            "location_x": ff_flat.get("location_x", ""),
-                            "location_y": ff_flat.get("location_y", ""),
+                            "player_id": safe_int(fff.get("player_id")),
+                            "teammate": fff.get("teammate", ""),
+                            "actor": fff.get("actor", ""),
+                            "keeper": fff.get("keeper", ""),
+                            "location": fff.get("location", ""),
+                            "location_x": fff.get("location_x", ""),
+                            "location_y": fff.get("location_y", ""),
                         }
-                        writer_ff.writerow(ff_row)
-                        tracker_ff.update(ff_row)
-                        count_ff += 1
-                        pid = safe_int(ff_row.get("player_id"))
+                        w_ff.writerow({c: row_ff.get(c, "") for c in fields_ff})
+                        t_ff.update(row_ff)
+                        c_ff += 1
+                        pid = safe_int(row_ff.get("player_id"))
                         if pid is not None and pid not in players:
                             players[pid] = ("", None)
 
-                visible_area = record.get("visible_area")
-                if isinstance(visible_area, list):
-                    vis_row = {
-                        "match_id": "" if match_id is None else match_id,
+                vis = rec.get("visible_area")
+                if isinstance(vis, list):
+                    row_vis = {
+                        "match_id": "" if mid is None else mid,
                         "event_uuid": event_uuid,
-                        "visible_area": json.dumps(visible_area),
-                        "visible_area_point_count": int(len(visible_area) / 2),
+                        "visible_area": json.dumps(vis),
+                        "visible_area_point_count": int(len(vis) / 2),
                     }
-                    writer_vis.writerow(vis_row)
-                    tracker_vis.update(vis_row)
-                    count_vis += 1
-            logger2.maybe_log(idx, count_main)
-    logger2.maybe_log(len(files), count_main, force=True)
+                    w_vis.writerow({c: row_vis.get(c, "") for c in fields_vis})
+                    t_vis.update(row_vis)
+                    c_vis += 1
+            logger2.maybe_log(i, c_main)
+    finally:
+        f_main.close(); f_ff.close(); f_vis.close()
+    logger2.maybe_log(len(to_process), c_main, force=True)
 
-    return {
-        "main": {
-            **finalize_table_quality("three_sixty", count_main, set(fields_main), tracker_main),
-            "output": str(out_main),
-            "files_processed": len(files),
-        },
-        "freeze": {
-            **finalize_table_quality("three_sixty_freeze_frames", count_ff, set(fields_ff), tracker_ff),
-            "output": str(out_ff),
-            "files_processed": len(files),
-        },
-        "visible": {
-            **finalize_table_quality("three_sixty_visible_area", count_vis, set(fields_vis), tracker_vis),
-            "output": str(out_vis),
-            "files_processed": len(files),
-        },
+    tables = [
+        finalize_table_quality("three_sixty", c_main, set(fields_main), t_main),
+        finalize_table_quality("three_sixty_freeze_frames", c_ff, set(fields_ff), t_ff),
+        finalize_table_quality("three_sixty_visible_area", c_vis, set(fields_vis), t_vis),
+    ]
+    tables[0]["output"] = str(output_dir / "three_sixty.csv")
+    tables[1]["output"] = str(output_dir / "three_sixty_freeze_frames.csv")
+    tables[2]["output"] = str(output_dir / "three_sixty_visible_area.csv")
+    return tables, summary, {
+        rel_key(p, input_dir): fingerprints[rel_key(p, input_dir)]
+        for p in to_process
+        if str(p) not in failed_files
     }
 
 def build_dimensions(
     output_dir: Path,
+    append: bool,
+    sample_rows: int | None,
     teams: dict[int, str],
     players: dict[int, tuple[str, int | None]],
-    sample_rows: int | None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    teams_path = output_dir / "teams.csv"
-    players_path = output_dir / "players.csv"
-
+) -> list[dict[str, Any]]:
     team_rows = [{"team_id": tid, "team_name": name} for tid, name in sorted(teams.items(), key=lambda x: x[0])]
     player_rows = [
         {"player_id": pid, "player_name": name, "team_id": "" if team_id is None else team_id}
         for pid, (name, team_id) in sorted(players.items(), key=lambda x: x[0])
     ]
 
-    write_rows(teams_path, ["team_id", "team_name"], team_rows)
-    write_rows(players_path, ["player_id", "player_name", "team_id"], player_rows)
+    # rewrite dimensions each run to keep deduped/latest view
+    write_mode_append = False if append else False
+    f_t, w_t = open_csv_writer(output_dir / "teams.csv", ["team_id", "team_name"], write_mode_append)
+    f_p, w_p = open_csv_writer(output_dir / "players.csv", ["player_id", "player_name", "team_id"], write_mode_append)
+    try:
+        for r in team_rows:
+            w_t.writerow(r)
+        for r in player_rows:
+            w_p.writerow(r)
+    finally:
+        f_t.close(); f_p.close()
 
-    tracker_teams = QualityTracker(KEY_NULL_COLUMNS["teams"], sample_rows)
-    for row in team_rows:
-        tracker_teams.update(row)
-    tracker_players = QualityTracker(KEY_NULL_COLUMNS["players"], sample_rows)
-    for row in player_rows:
-        tracker_players.update(row)
+    qt = QualityTracker(KEY_NULL_COLUMNS["teams"], sample_rows)
+    qp = QualityTracker(KEY_NULL_COLUMNS["players"], sample_rows)
+    for r in team_rows:
+        qt.update(r)
+    for r in player_rows:
+        qp.update(r)
 
-    teams_quality = {
-        **finalize_table_quality("teams", len(team_rows), {"team_id", "team_name"}, tracker_teams),
-        "output": str(teams_path),
-    }
-    players_quality = {
-        **finalize_table_quality("players", len(player_rows), {"player_id", "player_name", "team_id"}, tracker_players),
-        "output": str(players_path),
-    }
-    return teams_quality, players_quality
+    t = finalize_table_quality("teams", len(team_rows), {"team_id", "team_name"}, qt)
+    p = finalize_table_quality("players", len(player_rows), {"player_id", "player_name", "team_id"}, qp)
+    t["output"] = str(output_dir / "teams.csv")
+    p["output"] = str(output_dir / "players.csv")
+    return [t, p]
 
 
-def write_data_quality_report(report_path: Path, tables: list[dict[str, Any]], skipped: list[str]) -> None:
+def write_data_quality_report(report_path: Path, tables: list[dict[str, Any]], processor_summaries: dict[str, dict[str, int]], parse_failures: dict[str, int], append_mode: bool) -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# Data Quality Report", "", "## Output Row Counts"]
-    for table in tables:
-        lines.append(f"- `{table['table']}`: {table['row_count']:,} rows")
+    lines = ["# Data Quality Report", "", "## Run Mode", f"- Append mode: {append_mode}", ""]
 
-    if skipped:
-        lines.extend(["", "## Skipped Processors"])
-        for item in skipped:
-            lines.append(f"- {item}")
+    lines.append("## Processor File Summary")
+    for proc in PROCESSORS:
+        s = processor_summaries.get(proc, {"found": 0, "skipped_unchanged": 0, "processed": 0})
+        lines.append(
+            f"- `{proc}`: found={s['found']}, skipped_unchanged={s['skipped_unchanged']}, processed={s['processed']}, parse_failures={parse_failures.get(proc, 0)}"
+        )
+
+    lines.extend(["", "## Output Row Counts (This Run)"])
+    for t in tables:
+        lines.append(f"- `{t['table']}`: {t['row_count']:,} rows")
 
     lines.extend(["", "## Required Column Checks"])
-    for table in tables:
-        missing = table["missing_required"]
-        if missing:
-            lines.append(f"- `{table['table']}`: FAIL (missing: {', '.join(missing)})")
+    for t in tables:
+        if t["missing_required"]:
+            lines.append(f"- `{t['table']}`: FAIL (missing: {', '.join(t['missing_required'])})")
         else:
-            lines.append(f"- `{table['table']}`: PASS")
+            lines.append(f"- `{t['table']}`: PASS")
 
     lines.extend(["", "## Key ID Null Rates"])
-    for table in tables:
-        if not table["null_rates"]:
-            continue
-        parts = [f"{k}={v}" for k, v in table["null_rates"].items()]
-        lines.append(f"- `{table['table']}`: " + ", ".join(parts) + f" (sampled rows: {table['sampled_rows']:,})")
+    for t in tables:
+        parts = [f"{k}={v}" for k, v in t["null_rates"].items()]
+        if parts:
+            lines.append(f"- `{t['table']}`: " + ", ".join(parts) + f" (sampled rows: {t['sampled_rows']:,})")
 
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -814,6 +930,7 @@ def main() -> None:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     report_path = Path(args.report_path)
+    state_path = Path(args.state_path) if args.state_path else output_dir / ".etl_state.json"
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
@@ -821,109 +938,87 @@ def main() -> None:
     include = parse_processor_list(args.include)
     exclude = parse_processor_list(args.exclude)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.append and args.incremental and not args.force:
+        print("[INFO] --no-append with incremental can produce partial rewrites. Enabling --force for this run.")
+        args.force = True
+
+    state = load_state(state_path)
+    state.setdefault("files", {})
+
+    parse_failures: dict[str, int] = {p: 0 for p in PROCESSORS}
+    processor_summaries: dict[str, dict[str, int]] = {}
+    quality_tables: list[dict[str, Any]] = []
     teams: dict[int, str] = {}
     players: dict[int, tuple[str, int | None]] = {}
-    quality_tables: list[dict[str, Any]] = []
-    skipped: list[str] = []
 
-    if should_run_processor("events", include, exclude):
-        result = process_events(
-            input_dir,
-            output_dir,
-            args.max_files,
-            args.log_every_files,
-            args.log_every_rows,
-            args.report_sample_rows,
-            teams,
-            players,
-        )
-        if result:
-            quality_tables.append(result)
+    if args.append:
+        load_existing_dimensions(output_dir, teams, players)
+
+    def run_processor(name: str, fn):
+        if not should_run(name, include, exclude):
+            processor_summaries[name] = {"found": 0, "skipped_unchanged": 0, "processed": 0}
+            for t in PROCESSOR_TABLES.get(name, []):
+                quality_tables.append(
+                    {
+                        "table": t,
+                        "row_count": 0,
+                        "missing_required": [],
+                        "null_rates": {},
+                        "sampled_rows": 0,
+                        "output": str(output_dir / f"{t}.csv"),
+                    }
+                )
+            return
+        tables, summary, updates = fn()
+        processor_summaries[name] = summary
+        if tables:
+            quality_tables.extend(tables)
         else:
-            skipped.append("events")
-    else:
-        skipped.append("events (excluded)")
+            for t in PROCESSOR_TABLES.get(name, []):
+                quality_tables.append(
+                    {
+                        "table": t,
+                        "row_count": 0,
+                        "missing_required": [],
+                        "null_rates": {},
+                        "sampled_rows": 0,
+                        "output": str(output_dir / f"{t}.csv"),
+                    }
+                )
+        if updates:
+            state["files"].setdefault(name, {}).update(updates)
+            save_state(state_path, state)
 
-    if should_run_processor("competitions", include, exclude):
-        result = process_competitions(
-            input_dir,
-            output_dir,
-            args.max_files,
-            args.log_every_files,
-            args.log_every_rows,
-            args.report_sample_rows,
-        )
-        if result:
-            quality_tables.append(result)
-        else:
-            skipped.append("competitions")
-    else:
-        skipped.append("competitions (excluded)")
+    run_processor(
+        "events",
+        lambda: process_events(input_dir, output_dir, args, state, parse_failures, teams, players),
+    )
+    run_processor(
+        "competitions",
+        lambda: process_competitions(input_dir, output_dir, args, state, parse_failures),
+    )
+    run_processor(
+        "matches",
+        lambda: process_matches(input_dir, output_dir, args, state, parse_failures, teams),
+    )
+    run_processor(
+        "lineups",
+        lambda: process_lineups(input_dir, output_dir, args, state, parse_failures, teams, players),
+    )
+    run_processor(
+        "three-sixty",
+        lambda: process_three_sixty(input_dir, output_dir, args, state, parse_failures, players),
+    )
 
-    if should_run_processor("matches", include, exclude):
-        result = process_matches(
-            input_dir,
-            output_dir,
-            args.max_files,
-            args.log_every_files,
-            args.log_every_rows,
-            args.report_sample_rows,
-            teams,
-        )
-        if result:
-            quality_tables.append(result)
-        else:
-            skipped.append("matches")
-    else:
-        skipped.append("matches (excluded)")
-
-    if should_run_processor("lineups", include, exclude):
-        result = process_lineups(
-            input_dir,
-            output_dir,
-            args.max_files,
-            args.log_every_files,
-            args.log_every_rows,
-            args.report_sample_rows,
-            teams,
-            players,
-        )
-        if result:
-            quality_tables.append(result)
-        else:
-            skipped.append("lineups")
-    else:
-        skipped.append("lineups (excluded)")
-
-    if should_run_processor("three-sixty", include, exclude):
-        result = process_three_sixty(
-            input_dir,
-            output_dir,
-            args.max_files,
-            args.log_every_files,
-            args.log_every_rows,
-            args.report_sample_rows,
-            players,
-        )
-        if result:
-            quality_tables.extend([result["main"], result["freeze"], result["visible"]])
-        else:
-            skipped.append("three-sixty")
-    else:
-        skipped.append("three-sixty (excluded)")
-
-    teams_quality, players_quality = build_dimensions(output_dir, teams, players, args.report_sample_rows)
-    quality_tables.extend([teams_quality, players_quality])
-
-    write_data_quality_report(report_path, quality_tables, skipped)
+    quality_tables.extend(build_dimensions(output_dir, args.append, args.report_sample_rows, teams, players))
+    write_data_quality_report(report_path, quality_tables, processor_summaries, parse_failures, args.append)
 
     print("ETL completed.")
-    for table in quality_tables:
-        print(f"- {table['table']}: {table['row_count']:,} rows -> {table.get('output', '')}")
+    for t in quality_tables:
+        print(f"- {t['table']}: {t['row_count']:,} rows -> {t.get('output', '')}")
     print(f"Wrote report: {report_path}")
+    print(f"State file: {state_path}")
 
 
 if __name__ == "__main__":
     main()
-
