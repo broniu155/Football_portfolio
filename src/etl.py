@@ -753,6 +753,7 @@ def process_three_sixty(
     summary = {"found": len(all_files), "skipped_unchanged": skipped_unchanged, "processed": len(to_process)}
     if not to_process:
         return [], summary, {}
+    failed_files: set[str] = set()
 
     # schema pass only for changed files
     cols: set[str] = set()
