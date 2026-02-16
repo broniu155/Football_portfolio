@@ -1,0 +1,78 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Football Portfolio</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #121a2b;
+      --text: #e8edf7;
+      --muted: #a8b3c9;
+      --accent: #6ee7b7;
+      --accent2: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 20% 0%, #1a2340 0%, var(--bg) 45%);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: linear-gradient(180deg, #18233a, var(--card));
+      border: 1px solid #243352;
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    }
+    h1 { margin: 0 0 8px; font-size: clamp(1.6rem, 2vw, 2rem); }
+    p { margin: 0 0 14px; color: var(--muted); line-height: 1.55; }
+    .buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+    a.btn {
+      text-decoration: none;
+      color: #041320;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    a.ghost {
+      color: var(--text);
+      border: 1px solid #2b3f66;
+      background: transparent;
+    }
+    code {
+      display: inline-block;
+      padding: 2px 6px;
+      background: #0c1527;
+      border: 1px solid #223352;
+      border-radius: 6px;
+      color: #d9e4ff;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Football Data Analyst Portfolio</h1>
+    <p>
+      This GitHub Pages site is a landing page for the full interactive Streamlit app.
+      GitHub Pages hosts static sites only, while Streamlit requires a Python backend.
+    </p>
+    <p>
+      After you deploy the app on Streamlit Community Cloud, replace
+      <code>STREAMLIT_APP_URL</code> in <code>docs/index.html</code> with your real app URL.
+    </p>
+    <div class="buttons">
+      <a class="btn" href="STREAMLIT_APP_URL" target="_blank" rel="noopener noreferrer">Open Live Streamlit App</a>
+      <a class="btn ghost" href="https://github.com" target="_blank" rel="noopener noreferrer">View Repository</a>
+    </div>
+  </main>
+</body>
+</html>

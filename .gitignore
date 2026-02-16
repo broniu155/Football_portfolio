@@ -19,3 +19,15 @@ outputs/tables/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environments
+venv/
+
+# Data (keep only small demo subsets in repo if needed)
+data_raw/
+data_processed/
+outputs/
+
