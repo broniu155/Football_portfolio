@@ -1,27 +1,40 @@
 # Data Quality Report
 
-## Pipeline Summary
-- Event files processed: 3465
-- Event rows written: 12188951
-- Unique matches: 3465
+## Run Mode
+- Append mode: True
 
-## Required Columns Check
-- Status: PASS
-- Missing columns: none
-- Null-rate stats based on all 12,188,951 rows
+## Processor File Summary
+- `events`: found=3465, skipped_unchanged=3465, processed=0, parse_failures=0
+- `competitions`: found=1, skipped_unchanged=1, processed=0, parse_failures=0
+- `matches`: found=75, skipped_unchanged=75, processed=0, parse_failures=0
+- `lineups`: found=3464, skipped_unchanged=3464, processed=0, parse_failures=0
+- `three-sixty`: found=326, skipped_unchanged=1, processed=325, parse_failures=6
 
-## Stable ID Coverage
-- `match_id` null rate: 0.00%
-- `team_id` null rate: 0.00%
-- `player_id` null rate: 0.43%
+## Output Row Counts (This Run)
+- `events`: 0 rows
+- `competitions`: 0 rows
+- `matches`: 0 rows
+- `lineups_players`: 0 rows
+- `three_sixty`: 1,024,538 rows
+- `three_sixty_freeze_frames`: 15,538,303 rows
+- `three_sixty_visible_area`: 1,024,538 rows
+- `teams`: 22 rows
+- `players`: 38 rows
 
-## Coordinate Coverage
-- `location_x` null rate: 0.75%
-- `location_y` null rate: 0.75%
-- `pass_end_location_x` null rate: 72.21%
-- `pass_end_location_y` null rate: 72.21%
+## Required Column Checks
+- `events`: PASS
+- `competitions`: PASS
+- `matches`: PASS
+- `lineups_players`: PASS
+- `three_sixty`: PASS
+- `three_sixty_freeze_frames`: PASS
+- `three_sixty_visible_area`: PASS
+- `teams`: PASS
+- `players`: PASS
 
-## Notes
-- One row is produced per event record from source JSON arrays.
-- `match_id` is derived from source filenames.
-- Nested structures are flattened with underscore-separated columns.
+## Key ID Null Rates
+- `three_sixty`: match_id=0.00%, event_uuid=0.00% (sampled rows: 1,024,538)
+- `three_sixty_freeze_frames`: match_id=0.00%, event_uuid=0.00%, player_id=100.00% (sampled rows: 15,538,303)
+- `three_sixty_visible_area`: match_id=0.00%, event_uuid=0.00% (sampled rows: 1,024,538)
+- `teams`: team_id=0.00% (sampled rows: 22)
+- `players`: player_id=0.00%, team_id=0.00% (sampled rows: 38)
