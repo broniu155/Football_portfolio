@@ -6,4 +6,5 @@ mplsoccer>=1.2.4
 pyyaml>=6.0.1
 streamlit
 plotly
+altair==4.2.2
 
