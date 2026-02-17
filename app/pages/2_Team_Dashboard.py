@@ -1,5 +1,13 @@
-﻿import streamlit as st
+﻿import sys
+from pathlib import Path
+
 import plotly.express as px
+import streamlit as st
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
 from app.components.data import load_star_schema
 from app.components.filters import sidebar_filters
 
@@ -17,8 +25,10 @@ if "team_name" in shots.columns:
 st.markdown("### Team shot profile")
 c1, c2, c3 = st.columns(3)
 c1.metric("Shots", len(shots))
-if "xg" in shots.columns: c2.metric("Total xG", f"{shots['xg'].sum():.2f}")
-if "shot_outcome" in shots.columns: c3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
+if "xg" in shots.columns:
+    c2.metric("Total xG", f"{shots['xg'].sum():.2f}")
+if "shot_outcome" in shots.columns:
+    c3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
 
 if "shot_outcome" in shots.columns:
     fig = px.histogram(shots, x="shot_outcome")

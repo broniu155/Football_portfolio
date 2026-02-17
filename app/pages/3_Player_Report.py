@@ -1,5 +1,13 @@
-﻿import streamlit as st
+﻿import sys
+from pathlib import Path
+
 import plotly.express as px
+import streamlit as st
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
 from app.components.data import load_star_schema
 from app.components.filters import sidebar_filters
 
@@ -20,12 +28,19 @@ if "player_name" in shots.columns:
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Shots", len(shots))
-if "xg" in shots.columns: c2.metric("Total xG", f"{shots['xg'].sum():.2f}")
-if "shot_outcome" in shots.columns: c3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
+if "xg" in shots.columns:
+    c2.metric("Total xG", f"{shots['xg'].sum():.2f}")
+if "shot_outcome" in shots.columns:
+    c3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
 
-if {"x","y"}.issubset(shots.columns):
-    fig = px.scatter(shots, x="x", y="y", size="xg" if "xg" in shots.columns else None,
-                     color="shot_outcome" if "shot_outcome" in shots.columns else None)
+if {"x", "y"}.issubset(shots.columns):
+    fig = px.scatter(
+        shots,
+        x="x",
+        y="y",
+        size="xg" if "xg" in shots.columns else None,
+        color="shot_outcome" if "shot_outcome" in shots.columns else None,
+    )
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 

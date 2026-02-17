@@ -4,8 +4,11 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import tempfile
 import time
 from pathlib import Path
+
+import pandas as pd
 
 
 FACT_CANDIDATE_COLUMNS = [
@@ -1091,7 +1094,15 @@ def write_model_notes(output_dir: Path) -> int:
     return len(text)
 
 
-def build_star_schema(
+def convert_csv_tables_to_parquet(csv_dir: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for csv_path in sorted(csv_dir.glob("*.csv")):
+        df = pd.read_csv(csv_path)
+        out_path = output_dir / f"{csv_path.stem}.parquet"
+        df.to_parquet(out_path, index=False)
+
+
+def _build_star_schema_csv(
     input_dir: Path,
     output_dir: Path,
     progress_every: int = 200_000,
@@ -1152,12 +1163,44 @@ def build_star_schema(
     return counts
 
 
+def build_star_schema(
+    input_dir: Path,
+    output_dir: Path,
+    progress_every: int = 200_000,
+    estimate_total: bool = False,
+    output_format: str = "parquet",
+) -> dict[str, int]:
+    if output_format not in {"csv", "parquet"}:
+        raise ValueError("output_format must be 'csv' or 'parquet'")
+
+    if output_format == "csv":
+        return _build_star_schema_csv(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            progress_every=progress_every,
+            estimate_total=estimate_total,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="star_schema_csv_") as temp_dir:
+        temp_output_dir = Path(temp_dir)
+        counts = _build_star_schema_csv(
+            input_dir=input_dir,
+            output_dir=temp_output_dir,
+            progress_every=progress_every,
+            estimate_total=estimate_total,
+        )
+        convert_csv_tables_to_parquet(temp_output_dir, output_dir)
+        write_model_notes(output_dir)
+    return counts
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export StatsBomb star-schema CSVs for Power BI.")
     parser.add_argument("--input-dir", type=Path, default=Path("data_processed"))
     parser.add_argument("--output-dir", type=Path, default=Path("data_model"))
     parser.add_argument("--progress-every", type=int, default=200000)
     parser.add_argument("--estimate-total", action="store_true", default=False)
+    parser.add_argument("--format", choices=["csv", "parquet"], default="parquet")
     return parser.parse_args()
 
 
@@ -1168,12 +1211,13 @@ def main() -> None:
         output_dir=args.output_dir,
         progress_every=args.progress_every,
         estimate_total=args.estimate_total,
+        output_format=args.format,
     )
 
     print("\nBuild summary (rows written):")
     for table in sorted(counts.keys()):
         print(f"- {table}: {counts[table]:,}")
-    print(f"\nWrote star schema tables to {args.output_dir}/")
+    print(f"\nWrote star schema tables to {args.output_dir}/ ({args.format})")
 
 
 if __name__ == "__main__":

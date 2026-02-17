@@ -1,6 +1,14 @@
-﻿import streamlit as st
+﻿import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
+import streamlit as st
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
 from app.components.data import load_star_schema
 from app.components.filters import sidebar_filters
 
@@ -19,10 +27,14 @@ if player_name and "player_name" in shots.columns:
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Shots", len(shots))
-if "xg" in shots.columns: k2.metric("Total xG", f"{shots['xg'].sum():.2f}")
-if "shot_outcome" in shots.columns: k3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
-if "minute" in shots.columns and len(shots): k4.metric("Last Shot Min", int(shots["minute"].max()))
-else: k4.metric("Last Shot Min", 0)
+if "xg" in shots.columns:
+    k2.metric("Total xG", f"{shots['xg'].sum():.2f}")
+if "shot_outcome" in shots.columns:
+    k3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
+if "minute" in shots.columns and len(shots):
+    k4.metric("Last Shot Min", int(shots["minute"].max()))
+else:
+    k4.metric("Last Shot Min", 0)
 
 st.markdown("---")
 left, right = st.columns([1.3, 1])
@@ -34,9 +46,12 @@ with left:
         size_col = "xg" if "xg" in shots.columns else None
         color_col = "shot_outcome" if "shot_outcome" in shots.columns else None
         fig = px.scatter(
-            shots, x="x", y="y",
-            size=size_col, color=color_col,
-            hover_data=[c for c in ["minute","player_name","xg","shot_outcome"] if c in shots.columns],
+            shots,
+            x="x",
+            y="y",
+            size=size_col,
+            color=color_col,
+            hover_data=[c for c in ["minute", "player_name", "xg", "shot_outcome"] if c in shots.columns],
         )
         fig.update_yaxes(autorange="reversed")
         st.plotly_chart(fig, use_container_width=True)

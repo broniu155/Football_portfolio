@@ -1,0 +1,4 @@
+event_id,match_id,team_id,team_name,player_id,player_name,minute,second,period,x,y,location_x,location_y,shot_end_location_x,shot_end_location_y,xg,shot_statsbomb_xg,shot_outcome,shot_outcome_id,under_pressure
+5,1001,1,North City,11,Noah Striker,5,12,1,98,42,98,42,120,40,0.18,0.18,Saved,96,1
+7,1001,2,South United,21,Ethan Forward,14,3,1,105,30,105,30,120,34,0.32,0.32,Goal,97,0
+11,1002,3,East FC,31,Lucas Nine,12,48,2,92,55,92,55,120,60,0.09,0.09,Off T,98,1

@@ -1,131 +1,26 @@
-﻿# Football Match Tactical Analytics Portfolio
+# Football Portfolio Streamlit App
 
-A professional, reproducible football analytics project built on **StatsBomb Open Data** to evaluate team tactics at match level.
+Multi-page football analytics app with a robust data-loading strategy for local development and Streamlit Community Cloud deployment.
 
-## Objective
+## Data Modes
 
-This project is designed as a portfolio piece for football recruitment contexts (club analyst roles, consultancy, and performance departments). The aim is to show a practical workflow for tactical analysis:
+The app supports three modes controlled by `DATA_MODE` (and overridable from the Streamlit sidebar):
 
-- identify tactical patterns in possession and out of possession,
-- quantify those patterns with event/360-derived metrics,
-- communicate results through both technical visuals (Python) and stakeholder dashboards (Power BI).
+- `sample` (default): uses committed files in `app/data/sample_star_schema/`
+- `remote`: downloads a packaged dataset from `DATA_URL` on first run
+- `local_generated`: loads from `data_model/` generated from local `data_raw/`
 
-The project is intentionally focused on method and process. It does **not** claim any precomputed findings in this repository.
+Required tables for pages:
 
-## Tactical Focus
+- `dim_match`
+- `dim_team`
+- `dim_player`
+- `fact_events`
+- `fact_shots`
 
-The analysis framework is structured around four tactical themes:
+The loader reads `*.parquet` first, then falls back to `*.csv`.
 
-- `Build-up structure`: progression routes, pass lane usage, verticality, and zone occupation.
-- `Chance creation`: shot context, assist zones, cutbacks, through balls, and set-play profiles.
-- `Defensive organization`: pressing actions, duel locations, regain zones, and defensive line behavior (where data permits).
-- `Transitions`: attacking and defensive transition speed after regains/losses.
-
-These themes are mapped to clear, reproducible metrics so coaches and recruiters can interpret style, not just output volume.
-
-## Dataset
-
-Source: **StatsBomb Open Data** (JSON files included under `data/`).
-
-Repository dataset components:
-
-- `data/competitions.json`
-- `data/matches/<competition_id>/<season_id>.json`
-- `data/events/<match_id>.json`
-- `data/lineups/<match_id>.json`
-- `data/three-sixty/<match_id>.json` (for selected matches)
-
-Reference docs are provided in `doc/`.
-
-If this work is published externally, include proper attribution per StatsBomb terms.
-
-## Project Structure
-
-```text
-Football_portfolio/
-|-- config/
-|   `-- analysis_config.example.yaml
-|-- data/
-|   |-- competitions.json
-|   |-- matches/
-|   |-- events/
-|   |-- lineups/
-|   `-- three-sixty/
-|-- doc/
-|-- notebooks/
-|-- outputs/
-|   |-- python_figures/
-|   `-- tables/
-|-- powerbi/
-|   `-- README.md
-|-- scripts/
-|   `-- run_analysis.py
-|-- src/
-|   |-- __init__.py
-|   |-- config.py
-|   |-- data_loader.py
-|   |-- features/
-|   |   `-- tactical_metrics.py
-|   `-- visualization/
-|       `-- plots.py
-|-- tests/
-|-- .gitignore
-|-- requirements.txt
-`-- README.md
-```
-
-## Methodology
-
-1. **Scope selection**
-- Choose competition(s), season(s), and match sample.
-- Optionally narrow to a target team for opposition/scouting style reports.
-
-2. **Data ingestion and validation**
-- Load matches, events, lineups, and optional 360 freeze-frames.
-- Validate IDs, timestamps, and key fields before metric calculation.
-
-3. **Feature engineering (tactical metrics)**
-- Build possession chains and classify phases.
-- Calculate territorial, progression, chance-creation, pressing, and transition indicators.
-- Keep definitions explicit and versioned for repeatability.
-
-4. **Analytical outputs**
-- Python: tactical plots and structured summary tables.
-- Power BI: recruiter-friendly and coach-facing dashboard pages.
-
-5. **Interpretation layer**
-- Explain tactical tendencies with transparent metric definitions.
-- Separate descriptive evidence from subjective tactical judgment.
-
-## Outputs
-
-### Python figures
-Saved to `outputs/python_figures/`.
-
-Planned visual families include:
-
-- pass maps and network views,
-- territory/zone control maps,
-- shot maps by phase and assist type,
-- regain and pressure location maps,
-- transition timing distributions.
-
-### Power BI
-Power BI assets live under `powerbi/`.
-
-Typical dashboard pages:
-
-- Team Tactical Identity,
-- In Possession,
-- Out of Possession,
-- Transitions,
-- Match Comparison.
-
-`powerbi/README.md` documents expected input tables from Python.
-
-## How To Run
-
-### 1) Create environment
+## Quickstart (Local)
 
 ```bash
 python -m venv .venv
@@ -134,43 +29,75 @@ python -m venv .venv
 # macOS/Linux
 source .venv/bin/activate
 pip install -r requirements.txt
+streamlit run app/pages/1_Match_Report.py
 ```
 
-### 2) Configure scope
+Default mode is `sample`, so app starts without private raw data.
 
-Copy and edit the config:
+## Build Local Data Model From `data_raw/`
+
+Set mode:
 
 ```bash
-copy config\analysis_config.example.yaml config\analysis_config.yaml
+# Windows PowerShell
+$env:DATA_MODE="local_generated"
+# macOS/Linux
+export DATA_MODE=local_generated
 ```
 
-Set selected competition, season, team filters, and output options.
+Then either:
 
-### 3) Execute pipeline
+- use the in-app **Generate Local Data Model** button when files are missing, or
+- run commands manually:
 
 ```bash
-python scripts/run_analysis.py --config config/analysis_config.yaml
+python src/etl.py --input-dir data_raw --output-dir data_processed
+python src/export_star_schema.py --input-dir data_processed --output-dir data_model --format parquet
 ```
 
-### 4) Review outputs
+## Export Format
 
-- Python charts: `outputs/python_figures/`
-- Exported tables for BI: `outputs/tables/`
-- Build/report dashboard in Power BI using the exported tables.
+`src/export_star_schema.py` now supports:
 
-## Limitations
+```bash
+python src/export_star_schema.py --input-dir data_processed --output-dir data_model --format parquet
+python src/export_star_schema.py --input-dir data_processed --output-dir data_model --format csv
+```
 
-- StatsBomb Open Data does not cover all competitions/seasons uniformly.
-- 360 freeze-frame data exists only for selected matches.
-- Event data captures actions, not full continuous tracking for all players at all times.
-- Tactical inference is sensitive to sample size, game state, and opponent strength.
-- This repository currently provides framework and reproducible workflow; no claim is made here about universal team-quality conclusions.
+Default format is `parquet`.
 
-## Recruiter Notes
+## Sample Dataset
 
-This project is intended to demonstrate:
+Committed sample tables live in:
 
-- structured tactical thinking,
-- robust data handling and reproducible code,
-- communication across technical and non-technical audiences,
-- end-to-end delivery from raw event data to decision-ready visuals.
+- `app/data/sample_star_schema/dim_match.csv`
+- `app/data/sample_star_schema/dim_team.csv`
+- `app/data/sample_star_schema/dim_player.csv`
+- `app/data/sample_star_schema/fact_events.csv`
+- `app/data/sample_star_schema/fact_shots.csv`
+
+To regenerate sample data:
+
+```bash
+python scripts/make_sample_star_schema.py --format csv
+python scripts/make_sample_star_schema.py --format parquet
+```
+
+## Streamlit Community Cloud
+
+Recommended defaults:
+
+- `DATA_MODE=sample` (or leave unset)
+- Do not run ETL/export during app startup
+
+Optional remote mode:
+
+- `DATA_MODE=remote`
+- `DATA_URL=<public zip url containing star-schema files>`
+
+If required tables are missing, the app shows a professional error with:
+
+- active mode
+- resolved data path
+- missing files
+- exact local fix commands
