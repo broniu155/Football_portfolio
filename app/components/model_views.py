@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import streamlit as st
 
 
 def _first_existing(columns: pd.Index, candidates: list[str]) -> str | None:
@@ -54,7 +53,6 @@ def _with_names_from_dims(
     return view
 
 
-@st.cache_data(show_spinner=False)
 def get_shots_view(
     fact_shots: pd.DataFrame, dim_team: pd.DataFrame | None = None, dim_player: pd.DataFrame | None = None
 ) -> pd.DataFrame:
@@ -75,7 +73,6 @@ def get_shots_view(
     return view
 
 
-@st.cache_data(show_spinner=False)
 def get_events_view(
     fact_events: pd.DataFrame, dim_team: pd.DataFrame | None = None, dim_player: pd.DataFrame | None = None
 ) -> pd.DataFrame:

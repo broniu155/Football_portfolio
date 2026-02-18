@@ -7,6 +7,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import streamlit as st
 
@@ -38,6 +39,11 @@ def _select_mode() -> str:
         ),
     )
     return st.session_state["data_mode"]
+
+
+def _active_mode_from_state() -> str:
+    mode = str(st.session_state.get("data_mode", _default_mode())).strip().lower()
+    return mode if mode in VALID_MODES else _default_mode()
 
 
 @st.cache_resource(show_spinner=False)
@@ -99,6 +105,33 @@ def _read_table(path_str: str) -> pd.DataFrame:
     if path.suffix.lower() == ".parquet":
         return pd.read_parquet(path)
     return pd.read_csv(path)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_duckdb_connection(cache_key: str) -> duckdb.DuckDBPyConnection:
+    conn = duckdb.connect(database=":memory:")
+    conn.execute("PRAGMA threads=4")
+    return conn
+
+
+def _fact_scan_sql(path: Path) -> tuple[str, list[object]]:
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        return "read_parquet(?)", [str(path)]
+    if suffix == ".csv":
+        return "read_csv_auto(?, header=true, sample_size=-1)", [str(path)]
+    raise ValueError(f"Unsupported file format for {path}")
+
+
+def _load_fact_by_match(path: Path, match_id: int) -> pd.DataFrame:
+    scan_sql, scan_params = _fact_scan_sql(path)
+    conn = _get_duckdb_connection(str(path.parent.resolve()))
+    query = (
+        f"SELECT * "
+        f"FROM {scan_sql} "
+        f"WHERE TRY_CAST(match_id AS BIGINT) = ?"
+    )
+    return conn.execute(query, [*scan_params, int(match_id)]).df()
 
 
 def _render_generation_commands() -> str:
@@ -166,10 +199,8 @@ def _render_missing_data_error(active_mode: str, resolved_dir: Path, missing_fil
     )
 
 
-def load_star_schema() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    active_mode = _select_mode()
-    resolved_dir: Path
-
+def _resolve_active_table_paths(render_mode_selector: bool = False) -> tuple[str, Path, dict[str, Path]]:
+    active_mode = _select_mode() if render_mode_selector else _active_mode_from_state()
     try:
         resolved_dir = _resolve_data_dir(active_mode)
     except Exception as exc:
@@ -200,9 +231,22 @@ def load_star_schema() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Dat
                 st.rerun()
         st.stop()
 
+    return active_mode, resolved_dir, table_paths
+
+
+def load_dimensions() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=True)
     dim_match = _read_table(str(table_paths["dim_match"]))
     dim_team = _read_table(str(table_paths["dim_team"]))
     dim_player = _read_table(str(table_paths["dim_player"]))
-    fact_events = _read_table(str(table_paths["fact_events"]))
-    fact_shots = _read_table(str(table_paths["fact_shots"]))
-    return dim_match, dim_team, dim_player, fact_events, fact_shots
+    return dim_match, dim_team, dim_player
+
+
+def load_fact_events(match_id: int) -> pd.DataFrame:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+    return _load_fact_by_match(table_paths["fact_events"], match_id)
+
+
+def load_fact_shots(match_id: int) -> pd.DataFrame:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+    return _load_fact_by_match(table_paths["fact_shots"], match_id)
