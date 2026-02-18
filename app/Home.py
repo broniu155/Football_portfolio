@@ -1,28 +1,25 @@
-﻿import streamlit as st
-from pathlib import Path
+import streamlit as st
 
-st.set_page_config(page_title="Football Portfolio", page_icon="⚽", layout="wide")
+from app.components.ui import setup_page
 
-css = Path("app/assets/style.css")
-if css.exists():
-    st.markdown(f"<style>{css.read_text()}</style>", unsafe_allow_html=True)
+setup_page(page_title="Football Portfolio", page_icon="⚽")
 
-st.title("⚽ Football Data Analyst Portfolio")
-st.caption("StatsBomb open data • ETL → Star Schema → Interactive dashboards")
+st.title("Football Data Analyst Portfolio")
+st.caption("StatsBomb open data • ETL to star schema • Streamlit + Plotly + DuckDB")
+st.markdown('<span class="context-chip">Dark tactical dashboard mode enabled</span>', unsafe_allow_html=True)
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Focus", "Match & Player Insights")
-c2.metric("Data Model", "Star Schema")
-c3.metric("Stack", "Python + Streamlit")
-c4.metric("Visuals", "Shots, xG, Maps")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Focus", "Match & Player Insights")
+k2.metric("Model", "Star Schema")
+k3.metric("Engine", "DuckDB")
+k4.metric("Visuals", "Coach-ready reports")
 
-st.markdown("---")
-
-st.subheader("Pages")
-st.markdown("""
-Use the sidebar to navigate:
-- **Match Report**: shot map + xG timeline + key shots table  
-- **Team Dashboard**: team shot profile + event summaries  
-- **Player Report**: player shot profile + involvement  
-- **Data Model**: preview star schema tables  
-""")
+st.markdown('<div class="section-title">Pages</div>', unsafe_allow_html=True)
+st.markdown(
+    """
+- `Match Report`: pitch shot map, xG timeline, filtered event table
+- `Team Dashboard`: team-level KPIs and outcomes
+- `Player Report`: player shot profile in selected match context
+- `Data Model`: star-schema table previews
+"""
+)

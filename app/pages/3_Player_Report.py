@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 import plotly.express as px
@@ -8,46 +8,61 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from app.components.data import load_dimensions, load_fact_shots
-from app.components.filters import sidebar_filters
+from app.components.data import get_shots, load_dimensions
+from app.components.filters import sidebar_filters_cascading
 from app.components.model_views import get_shots_view
+from app.components.ui import setup_page
+from app.components.viz import draw_pitch_figure
 
-st.set_page_config(page_title="Player Report", page_icon="👤", layout="wide")
+setup_page(page_title="Player Report", page_icon="👤")
 
 dim_match, dim_team, dim_player = load_dimensions()
-match_id, team_name, player_name = sidebar_filters(dim_match, dim_team, dim_player)
+selection = sidebar_filters_cascading(dim_match)
+match_id = selection["match_id"]
+team_id = selection["team_id"]
+player_id = selection["player_id"]
 
-st.title("👤 Player Report")
+st.title("Player Report")
+st.caption(selection["match_label"] or "")
 
-if not player_name:
-    st.info("Select a player from the sidebar to view a player report.")
+if player_id is None:
+    st.info("Select a player from the sidebar to view the player report.")
     st.stop()
 
-with st.spinner("Loading match data..."):
-    fact_shots = load_fact_shots(match_id)
+with st.spinner("Loading player context..."):
+    raw_shots = get_shots(match_id=match_id, team_id=team_id, player_id=player_id)
+shots = get_shots_view(raw_shots, dim_team=dim_team, dim_player=dim_player)
 
-shots_view = get_shots_view(fact_shots, dim_team=dim_team, dim_player=dim_player)
-shots = shots_view[shots_view["match_id"] == match_id].copy()
-if "player_name" in shots.columns:
-    shots = shots[shots["player_name"] == player_name]
+k1, k2, k3 = st.columns(3)
+k1.metric("Shots", len(shots))
+k2.metric("Total xG", f"{shots['xg'].fillna(0).sum():.2f}" if "xg" in shots.columns else "-")
+k3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()) if "shot_outcome" in shots.columns else 0)
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Shots", len(shots))
-if "xg" in shots.columns:
-    c2.metric("Total xG", f"{shots['xg'].sum():.2f}")
-if "shot_outcome" in shots.columns:
-    c3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()))
-
-if {"x", "y"}.issubset(shots.columns):
-    fig = px.scatter(
+left, right = st.columns([1.35, 1])
+with left:
+    st.markdown('<div class="section-title">Player Shot Map</div>', unsafe_allow_html=True)
+    fig = draw_pitch_figure(
         shots,
-        x="x",
-        y="y",
-        size="xg" if "xg" in shots.columns else None,
-        color="shot_outcome" if "shot_outcome" in shots.columns else None,
+        title=f"{selection['player_name']} Shot Map",
+        subtitle=selection["match_label"] or "",
     )
-    fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("Shots table")
+with right:
+    st.markdown('<div class="section-title">Shot Timing</div>', unsafe_allow_html=True)
+    if "minute" in shots.columns and len(shots):
+        minute_counts = shots["minute"].value_counts().sort_index().reset_index()
+        minute_counts.columns = ["minute", "shots"]
+        fig2 = px.bar(minute_counts, x="minute", y="shots")
+        fig2.update_layout(
+            paper_bgcolor="#0b1220",
+            plot_bgcolor="#111a2b",
+            font=dict(color="#e7edf7"),
+            margin=dict(l=10, r=10, t=30, b=10),
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("Minute column not available for timing chart.")
+
+st.markdown('<div class="section-title">Shots Table (Top 200)</div>', unsafe_allow_html=True)
 st.dataframe(shots.head(200), use_container_width=True)

@@ -123,15 +123,48 @@ def _fact_scan_sql(path: Path) -> tuple[str, list[object]]:
     raise ValueError(f"Unsupported file format for {path}")
 
 
-def _load_fact_by_match(path: Path, match_id: int) -> pd.DataFrame:
-    scan_sql, scan_params = _fact_scan_sql(path)
+def _scan_relation_sql(path: Path) -> str:
+    normalized = str(path).replace("\\", "/").replace("'", "''")
+    if path.suffix.lower() == ".parquet":
+        return f"read_parquet('{normalized}')"
+    if path.suffix.lower() == ".csv":
+        return f"read_csv_auto('{normalized}', header=true, sample_size=-1)"
+    raise ValueError(f"Unsupported file format for {path}")
+
+
+@st.cache_data(show_spinner=False)
+def _get_table_columns(path_str: str) -> list[str]:
+    path = Path(path_str)
+    relation = _scan_relation_sql(path)
     conn = _get_duckdb_connection(str(path.parent.resolve()))
-    query = (
-        f"SELECT * "
-        f"FROM {scan_sql} "
-        f"WHERE TRY_CAST(match_id AS BIGINT) = ?"
-    )
-    return conn.execute(query, [*scan_params, int(match_id)]).df()
+    return conn.execute(f"SELECT * FROM {relation} LIMIT 0").df().columns.tolist()
+
+
+def _query_fact_rows(
+    path: Path,
+    match_id: int | None = None,
+    team_id: int | None = None,
+    player_id: int | None = None,
+) -> pd.DataFrame:
+    columns = set(_get_table_columns(str(path)))
+    relation = _scan_relation_sql(path)
+
+    predicates: list[str] = []
+    if match_id is not None:
+        if "match_id" not in columns:
+            return pd.DataFrame()
+        predicates.append(f"TRY_CAST(match_id AS BIGINT) = {int(match_id)}")
+    if team_id is not None and "team_id" in columns:
+        predicates.append(f"TRY_CAST(team_id AS BIGINT) = {int(team_id)}")
+    if player_id is not None and "player_id" in columns:
+        predicates.append(f"TRY_CAST(player_id AS BIGINT) = {int(player_id)}")
+
+    sql = f"SELECT * FROM {relation}"
+    if predicates:
+        sql += " WHERE " + " AND ".join(predicates)
+
+    conn = _get_duckdb_connection(str(path.parent.resolve()))
+    return conn.execute(sql).df()
 
 
 def _render_generation_commands() -> str:
@@ -234,19 +267,200 @@ def _resolve_active_table_paths(render_mode_selector: bool = False) -> tuple[str
     return active_mode, resolved_dir, table_paths
 
 
+@st.cache_data(show_spinner=False)
+def _load_dimensions_cached(dim_match_path: str, dim_team_path: str, dim_player_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return _read_table(dim_match_path), _read_table(dim_team_path), _read_table(dim_player_path)
+
+
+def _load_dimensions_from_paths(render_mode_selector: bool) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=render_mode_selector)
+    return _load_dimensions_cached(
+        str(table_paths["dim_match"]),
+        str(table_paths["dim_team"]),
+        str(table_paths["dim_player"]),
+    )
+
+
 def load_dimensions() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=True)
-    dim_match = _read_table(str(table_paths["dim_match"]))
-    dim_team = _read_table(str(table_paths["dim_team"]))
-    dim_player = _read_table(str(table_paths["dim_player"]))
-    return dim_match, dim_team, dim_player
+    return _load_dimensions_from_paths(render_mode_selector=True)
+
+
+def get_matches(competition_id: int | None = None, season_id: int | None = None) -> pd.DataFrame:
+    dim_match, _, _ = _load_dimensions_from_paths(render_mode_selector=False)
+    matches = dim_match.copy()
+
+    if competition_id is not None and "competition_id" in matches.columns:
+        matches = matches[pd.to_numeric(matches["competition_id"], errors="coerce") == int(competition_id)]
+    if season_id is not None and "season_id" in matches.columns:
+        matches = matches[pd.to_numeric(matches["season_id"], errors="coerce") == int(season_id)]
+
+    if "match_label" not in matches.columns:
+        home = matches["home_team_name"] if "home_team_name" in matches.columns else pd.Series("", index=matches.index)
+        away = matches["away_team_name"] if "away_team_name" in matches.columns else pd.Series("", index=matches.index)
+        if "match_date" in matches.columns:
+            matches["match_label"] = home.astype(str) + " vs " + away.astype(str) + " (" + matches["match_date"].astype(str) + ")"
+        else:
+            matches["match_label"] = home.astype(str) + " vs " + away.astype(str)
+
+    sort_cols = [col for col in ("match_date", "match_id") if col in matches.columns]
+    if sort_cols:
+        matches = matches.sort_values(sort_cols, ascending=False)
+
+    return matches.reset_index(drop=True)
+
+
+def get_teams_for_match(match_id: int) -> pd.DataFrame:
+    dim_match, dim_team, _ = _load_dimensions_from_paths(render_mode_selector=False)
+    teams: list[dict[str, object]] = []
+
+    if {"match_id", "home_team_id", "away_team_id"}.issubset(dim_match.columns):
+        dm = dim_match[pd.to_numeric(dim_match["match_id"], errors="coerce") == int(match_id)]
+        if not dm.empty:
+            row = dm.iloc[0]
+            teams.extend(
+                [
+                    {"team_id": row.get("home_team_id"), "team_name": row.get("home_team_name")},
+                    {"team_id": row.get("away_team_id"), "team_name": row.get("away_team_name")},
+                ]
+            )
+
+    teams_df = pd.DataFrame(teams)
+    if teams_df.empty:
+        _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+        candidates: list[pd.DataFrame] = []
+        for table in ("fact_events", "fact_shots"):
+            path = table_paths[table]
+            columns = set(_get_table_columns(str(path)))
+            if "match_id" not in columns or "team_id" not in columns:
+                continue
+            select_name = "team_name" if "team_name" in columns else "NULL::VARCHAR AS team_name"
+            relation = _scan_relation_sql(path)
+            conn = _get_duckdb_connection(str(path.parent.resolve()))
+            q = (
+                f"SELECT DISTINCT TRY_CAST(team_id AS BIGINT) AS team_id, {select_name} "
+                f"FROM {relation} "
+                f"WHERE TRY_CAST(match_id AS BIGINT) = {int(match_id)}"
+            )
+            candidates.append(conn.execute(q).df())
+        if candidates:
+            teams_df = pd.concat(candidates, ignore_index=True)
+
+    if teams_df.empty:
+        return pd.DataFrame(columns=["team_id", "team_name"])
+
+    if "team_id" in teams_df.columns:
+        teams_df["team_id"] = pd.to_numeric(teams_df["team_id"], errors="coerce")
+        teams_df = teams_df.dropna(subset=["team_id"])
+        teams_df["team_id"] = teams_df["team_id"].astype(int)
+
+    if "team_name" not in teams_df.columns and {"team_id", "team_name"}.issubset(dim_team.columns):
+        teams_df = teams_df.merge(
+            dim_team[["team_id", "team_name"]].drop_duplicates(subset=["team_id"]),
+            on="team_id",
+            how="left",
+        )
+
+    if "team_name" in teams_df.columns and {"team_id", "team_name"}.issubset(dim_team.columns):
+        teams_df = teams_df.merge(
+            dim_team[["team_id", "team_name"]].drop_duplicates(subset=["team_id"]),
+            on="team_id",
+            how="left",
+            suffixes=("", "_dim"),
+        )
+        if "team_name_dim" in teams_df.columns:
+            teams_df["team_name"] = teams_df["team_name"].combine_first(teams_df["team_name_dim"])
+            teams_df = teams_df.drop(columns=["team_name_dim"])
+
+    teams_df = teams_df.dropna(subset=["team_id"]).drop_duplicates(subset=["team_id"])
+    if "team_name" not in teams_df.columns:
+        teams_df["team_name"] = teams_df["team_id"].astype(str)
+    teams_df["team_name"] = teams_df["team_name"].fillna(teams_df["team_id"].astype(str))
+    return teams_df.sort_values("team_name").reset_index(drop=True)
+
+
+def get_players_for_match(match_id: int, team_id: int | None = None) -> pd.DataFrame:
+    _, dim_team, dim_player = _load_dimensions_from_paths(render_mode_selector=False)
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+
+    frames: list[pd.DataFrame] = []
+    for table in ("fact_events", "fact_shots"):
+        path = table_paths[table]
+        columns = set(_get_table_columns(str(path)))
+        if "match_id" not in columns or "player_id" not in columns:
+            continue
+
+        relation = _scan_relation_sql(path)
+        select_team = "TRY_CAST(team_id AS BIGINT) AS team_id" if "team_id" in columns else "NULL::BIGINT AS team_id"
+        select_name = "player_name" if "player_name" in columns else "NULL::VARCHAR AS player_name"
+        where = [f"TRY_CAST(match_id AS BIGINT) = {int(match_id)}"]
+        if team_id is not None and "team_id" in columns:
+            where.append(f"TRY_CAST(team_id AS BIGINT) = {int(team_id)}")
+        conn = _get_duckdb_connection(str(path.parent.resolve()))
+        query = (
+            f"SELECT DISTINCT TRY_CAST(player_id AS BIGINT) AS player_id, {select_team}, {select_name} "
+            f"FROM {relation} WHERE {' AND '.join(where)}"
+        )
+        frames.append(conn.execute(query).df())
+
+    if not frames:
+        return pd.DataFrame(columns=["player_id", "player_name", "team_id", "team_name"])
+
+    players = pd.concat(frames, ignore_index=True)
+    players = players.dropna(subset=["player_id"]).copy()
+    players["player_id"] = pd.to_numeric(players["player_id"], errors="coerce")
+    players = players.dropna(subset=["player_id"])
+    players["player_id"] = players["player_id"].astype(int)
+
+    if "team_id" in players.columns:
+        players["team_id"] = pd.to_numeric(players["team_id"], errors="coerce")
+        players.loc[players["team_id"].notna(), "team_id"] = players.loc[players["team_id"].notna(), "team_id"].astype(int)
+
+    if {"player_id", "player_name"}.issubset(dim_player.columns):
+        players = players.merge(
+            dim_player[["player_id", "player_name", "team_id"]].drop_duplicates(subset=["player_id"]),
+            on="player_id",
+            how="left",
+            suffixes=("", "_dim"),
+        )
+        if "player_name_dim" in players.columns:
+            players["player_name"] = players["player_name"].combine_first(players["player_name_dim"])
+            players = players.drop(columns=["player_name_dim"])
+        if "team_id_dim" in players.columns:
+            players["team_id"] = players["team_id"].combine_first(players["team_id_dim"])
+            players = players.drop(columns=["team_id_dim"])
+
+    if team_id is not None and "team_id" in players.columns:
+        players = players[pd.to_numeric(players["team_id"], errors="coerce") == int(team_id)]
+
+    if {"team_id", "team_name"}.issubset(dim_team.columns):
+        players = players.merge(
+            dim_team[["team_id", "team_name"]].drop_duplicates(subset=["team_id"]),
+            on="team_id",
+            how="left",
+        )
+    else:
+        players["team_name"] = pd.NA
+
+    players = players.drop_duplicates(subset=["player_id"])
+    if "player_name" not in players.columns:
+        players["player_name"] = players["player_id"].astype(str)
+    players["player_name"] = players["player_name"].fillna(players["player_id"].astype(str))
+    return players.sort_values("player_name").reset_index(drop=True)
+
+
+def get_shots(match_id: int, team_id: int | None = None, player_id: int | None = None) -> pd.DataFrame:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+    return _query_fact_rows(table_paths["fact_shots"], match_id=match_id, team_id=team_id, player_id=player_id)
+
+
+def get_events(match_id: int, team_id: int | None = None, player_id: int | None = None) -> pd.DataFrame:
+    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+    return _query_fact_rows(table_paths["fact_events"], match_id=match_id, team_id=team_id, player_id=player_id)
 
 
 def load_fact_events(match_id: int) -> pd.DataFrame:
-    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
-    return _load_fact_by_match(table_paths["fact_events"], match_id)
+    return get_events(match_id=match_id)
 
 
 def load_fact_shots(match_id: int) -> pd.DataFrame:
-    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
-    return _load_fact_by_match(table_paths["fact_shots"], match_id)
+    return get_shots(match_id=match_id)

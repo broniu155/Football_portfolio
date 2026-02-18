@@ -1,2 +1,101 @@
-﻿/* Keep it minimal; Streamlit already has good defaults */
-.block-container { padding-top: 2rem; }
+:root {
+  --bg-main: #0b1220;
+  --bg-panel: #111a2b;
+  --bg-panel-soft: #162238;
+  --text-main: #e7edf7;
+  --text-muted: #9aa4b2;
+  --accent: #42d392;
+  --accent-soft: rgba(66, 211, 146, 0.15);
+  --border: #27364f;
+}
+
+.stApp {
+  background: radial-gradient(circle at top right, #15233a 0%, var(--bg-main) 55%);
+  color: var(--text-main);
+}
+
+[data-testid="stHeader"] {
+  background: rgba(11, 18, 32, 0.75);
+}
+
+[data-testid="stSidebar"] {
+  background: linear-gradient(180deg, #0f1728 0%, #0a1220 100%);
+  border-right: 1px solid var(--border);
+}
+
+[data-testid="stSidebar"] * {
+  color: var(--text-main);
+}
+
+.block-container {
+  padding-top: 1.25rem;
+  padding-bottom: 1.8rem;
+  max-width: 1400px;
+}
+
+h1, h2, h3 {
+  color: var(--text-main);
+  letter-spacing: 0.2px;
+}
+
+h1 {
+  font-size: 2.05rem;
+  margin-bottom: 0.2rem;
+}
+
+.stCaption, p, label {
+  color: var(--text-muted);
+}
+
+[data-testid="stMetric"] {
+  background: linear-gradient(180deg, var(--bg-panel-soft) 0%, var(--bg-panel) 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.65rem 0.8rem;
+}
+
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"] {
+  color: var(--text-main);
+}
+
+.section-title {
+  margin-top: 0.2rem;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.context-chip {
+  display: inline-block;
+  margin-top: 0.1rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--text-main);
+  font-size: 0.85rem;
+}
+
+[data-testid="stDataFrame"], .stTable {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+[data-testid="stDataFrame"] div {
+  font-size: 0.86rem;
+}
+
+.stButton > button, .stDownloadButton > button {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #17263d;
+  color: var(--text-main);
+}
+
+.stButton > button:hover, .stDownloadButton > button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
