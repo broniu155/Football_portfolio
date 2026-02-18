@@ -27,6 +27,52 @@
   color: var(--text-main);
 }
 
+[data-testid="stSidebar"] .stSelectbox label p,
+[data-testid="stSidebar"] .stMultiSelect label p,
+[data-testid="stSidebar"] .stTextInput label p {
+  color: #c8d5e8 !important;
+  font-weight: 600;
+}
+
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-testid="stSidebar"] [data-baseweb="base-input"] {
+  background: #111b2d !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 10px !important;
+  min-height: 40px;
+}
+
+[data-testid="stSidebar"] [data-baseweb="select"] span,
+[data-testid="stSidebar"] [data-baseweb="select"] div,
+[data-testid="stSidebar"] [data-baseweb="base-input"] input {
+  color: #e7edf7 !important;
+}
+
+[data-testid="stSidebar"] [data-baseweb="base-input"] input::placeholder {
+  color: #9aa4b2 !important;
+  opacity: 1;
+}
+
+div[role="listbox"] {
+  background: #0f1728 !important;
+  border: 1px solid var(--border) !important;
+}
+
+div[role="option"] {
+  color: #e7edf7 !important;
+  background: #0f1728 !important;
+}
+
+div[role="option"][aria-selected="true"] {
+  background: #1a2a44 !important;
+  color: #f5f9ff !important;
+}
+
+div[role="option"]:hover {
+  background: #213451 !important;
+  color: #ffffff !important;
+}
+
 .block-container {
   padding-top: 1.25rem;
   padding-bottom: 1.8rem;
@@ -76,6 +122,39 @@ h1 {
   background: var(--accent-soft);
   color: var(--text-main);
   font-size: 0.85rem;
+}
+
+.match-header-card {
+  background: linear-gradient(180deg, #13233a 0%, #101d31 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.95rem 1rem;
+  margin-bottom: 0.7rem;
+}
+
+.match-header-title {
+  color: #f2f6ff;
+  font-weight: 700;
+  font-size: 1.3rem;
+  line-height: 1.2;
+}
+
+.match-header-subtitle {
+  color: #a9b8ce;
+  margin-top: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.match-summary-note {
+  color: #c0cee0;
+  margin-bottom: 0.45rem;
+  font-size: 0.9rem;
+}
+
+.match-summary-player-line {
+  color: #a9b8ce;
+  margin-top: 0.45rem;
+  font-size: 0.88rem;
 }
 
 [data-testid="stDataFrame"], .stTable {

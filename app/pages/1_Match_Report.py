@@ -1,16 +1,17 @@
 import sys
 from pathlib import Path
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
-import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from app.components.data import get_shots, load_dimensions
+from app.components.data import get_events, get_shots, load_dimensions
 from app.components.filters import sidebar_filters_cascading
+from app.components.match_summary import render_match_summary
 from app.components.model_views import get_shots_view
 from app.components.ui import setup_page
 from app.components.viz import draw_pitch_figure
@@ -30,10 +31,21 @@ if match_id is None:
 st.title("Match Report")
 st.caption(selection["match_label"] or "")
 
-with st.spinner("Loading filtered shots..."):
-    raw_shots = get_shots(match_id=match_id, team_id=team_id, player_id=player_id)
+with st.spinner("Loading match context..."):
+    match_events = get_events(match_id=match_id)
+    match_shots = get_shots(match_id=match_id)
+    context_shots = get_shots(match_id=match_id, team_id=team_id, player_id=player_id)
 
-shots = get_shots_view(raw_shots, dim_team=dim_team, dim_player=dim_player)
+shots = get_shots_view(context_shots, dim_team=dim_team, dim_player=dim_player)
+
+st.markdown('<div class="section-title">Broadcast Match Summary</div>', unsafe_allow_html=True)
+render_match_summary(
+    dim_match=dim_match,
+    fact_events_match=match_events,
+    fact_shots_match=match_shots,
+    fact_shots_context=context_shots,
+    selection=selection,
+)
 
 st.markdown('<div class="section-title">Context</div>', unsafe_allow_html=True)
 chips = [selection["competition_name"], selection["season_name"], selection["team_name"], selection["player_name"]]
