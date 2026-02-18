@@ -8,8 +8,6 @@ import tempfile
 import time
 from pathlib import Path
 
-import pandas as pd
-
 
 FACT_CANDIDATE_COLUMNS = [
     "event_id",
@@ -1094,12 +1092,156 @@ def write_model_notes(output_dir: Path) -> int:
     return len(text)
 
 
-def convert_csv_tables_to_parquet(csv_dir: Path, output_dir: Path) -> None:
+def _read_csv_header(csv_path: Path) -> list[str]:
+    with csv_path.open("r", encoding="utf-8", newline="") as f_in:
+        reader = csv.reader(f_in)
+        return next(reader, [])
+
+
+def _write_empty_parquet_with_schema(out_path: Path, columns: list[str]) -> None:
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "Parquet export requires 'pyarrow'. Install it with: pip install pyarrow"
+        ) from exc
+
+    arrays = [pa.array([], type=pa.string()) for _ in columns]
+    table = pa.Table.from_arrays(arrays, names=columns)
+    pq.write_table(table, out_path, compression="snappy")
+
+
+def _log_parquet_progress(filename: str, rows_processed: int, start_time: float) -> None:
+    elapsed = time.perf_counter() - start_time
+    rate = rows_processed / elapsed if elapsed > 0 else 0.0
+    print(
+        f"[parquet:{filename}] {rows_processed:,} rows | "
+        f"elapsed {format_duration(elapsed)} | {rate:,.0f} rows/s",
+        flush=True,
+    )
+
+
+def _convert_csv_to_parquet_streaming(
+    csv_path: Path,
+    out_path: Path,
+    batch_size_rows: int,
+    force_string_columns: bool = False,
+) -> int:
+    try:
+        import pyarrow as pa
+        import pyarrow.csv as pa_csv
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError(
+            "Parquet export requires 'pyarrow'. Install it with: pip install pyarrow"
+        ) from exc
+
+    columns = _read_csv_header(csv_path)
+    if not columns:
+        warn(f"{csv_path.name} has no header. Writing empty parquet.")
+        _write_empty_parquet_with_schema(out_path, [])
+        return 0
+
+    # pyarrow.csv uses byte-sized blocks; map row target to a practical byte block.
+    batch_size_bytes = max(1 << 20, min(256 << 20, batch_size_rows * 128))
+
+    column_types = None
+    if force_string_columns:
+        import pyarrow as pa
+
+        column_types = {name: pa.string() for name in columns}
+
+    read_options = pa_csv.ReadOptions(
+        use_threads=True,
+        block_size=batch_size_bytes,
+    )
+    convert_options = pa_csv.ConvertOptions(
+        strings_can_be_null=True,
+        quoted_strings_can_be_null=True,
+        column_types=column_types,
+    )
+
+    reader = pa_csv.open_csv(
+        csv_path,
+        read_options=read_options,
+        convert_options=convert_options,
+    )
+
+    writer = None
+    target_schema = None
+    rows_processed = 0
+    start_time = time.perf_counter()
+    last_logged_rows = 0
+    try:
+        while True:
+            try:
+                batch = reader.read_next_batch()
+            except StopIteration:
+                break
+
+            if batch.num_rows == 0:
+                continue
+
+            if writer is None:
+                target_schema = batch.schema
+                writer = pq.ParquetWriter(out_path, schema=target_schema, compression="snappy")
+            else:
+                if target_schema is not None and batch.schema != target_schema:
+                    # Keep schema stable after first batch.
+                    if batch.schema.names != target_schema.names:
+                        batch_table = pa.Table.from_batches([batch]).select(target_schema.names)
+                        batch = batch_table.to_batches()[0]
+                    batch = batch.cast(target_schema, safe=False)
+
+            writer.write_batch(batch)
+            rows_processed += batch.num_rows
+
+            if rows_processed - last_logged_rows >= batch_size_rows:
+                _log_parquet_progress(csv_path.name, rows_processed, start_time)
+                last_logged_rows = rows_processed
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if writer is None:
+        _write_empty_parquet_with_schema(out_path, columns)
+        _log_parquet_progress(csv_path.name, 0, start_time)
+        return 0
+
+    _log_parquet_progress(csv_path.name, rows_processed, start_time)
+    return rows_processed
+
+
+def convert_csv_tables_to_parquet(
+    csv_dir: Path,
+    output_dir: Path,
+    batch_size_rows: int = 200_000,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for csv_path in sorted(csv_dir.glob("*.csv")):
-        df = pd.read_csv(csv_path)
         out_path = output_dir / f"{csv_path.stem}.parquet"
-        df.to_parquet(out_path, index=False)
+        print(f"[parquet] Converting {csv_path.name} -> {out_path.name}", flush=True)
+        try:
+            _convert_csv_to_parquet_streaming(
+                csv_path=csv_path,
+                out_path=out_path,
+                batch_size_rows=batch_size_rows,
+                force_string_columns=False,
+            )
+        except Exception as exc:
+            warn(
+                f"{csv_path.name}: typed conversion failed ({exc}). "
+                "Retrying with all columns as string for robustness."
+            )
+            if out_path.exists():
+                out_path.unlink()
+            _convert_csv_to_parquet_streaming(
+                csv_path=csv_path,
+                out_path=out_path,
+                batch_size_rows=batch_size_rows,
+                force_string_columns=True,
+            )
 
 
 def _build_star_schema_csv(
@@ -1169,6 +1311,7 @@ def build_star_schema(
     progress_every: int = 200_000,
     estimate_total: bool = False,
     output_format: str = "parquet",
+    parquet_batch_size: int = 200_000,
 ) -> dict[str, int]:
     if output_format not in {"csv", "parquet"}:
         raise ValueError("output_format must be 'csv' or 'parquet'")
@@ -1189,7 +1332,7 @@ def build_star_schema(
             progress_every=progress_every,
             estimate_total=estimate_total,
         )
-        convert_csv_tables_to_parquet(temp_output_dir, output_dir)
+        convert_csv_tables_to_parquet(temp_output_dir, output_dir, batch_size_rows=parquet_batch_size)
         write_model_notes(output_dir)
     return counts
 
@@ -1201,6 +1344,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=200000)
     parser.add_argument("--estimate-total", action="store_true", default=False)
     parser.add_argument("--format", choices=["csv", "parquet"], default="parquet")
+    parser.add_argument(
+        "--parquet-batch-size",
+        type=int,
+        default=200000,
+        help="Target rows per batch for streaming parquet conversion.",
+    )
     return parser.parse_args()
 
 
@@ -1212,6 +1361,7 @@ def main() -> None:
         progress_every=args.progress_every,
         estimate_total=args.estimate_total,
         output_format=args.format,
+        parquet_batch_size=args.parquet_batch_size,
     )
 
     print("\nBuild summary (rows written):")
