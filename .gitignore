@@ -29,5 +29,6 @@ venv/
 # Data (keep only small demo subsets in repo if needed)
 data_raw/
 data_processed/
+data_model/
 outputs/
 
