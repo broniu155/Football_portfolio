@@ -10,6 +10,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.components.data import load_star_schema
 from app.components.filters import sidebar_filters
+from app.components.model_views import get_events_view, get_shots_view
 
 st.set_page_config(page_title="Team Dashboard", page_icon="🧠", layout="wide")
 
@@ -18,8 +19,11 @@ match_id, team_name, player_name = sidebar_filters(dim_match, dim_team, dim_play
 
 st.title("🧠 Team Dashboard")
 
-shots = fact_shots[fact_shots["match_id"] == match_id].copy()
-if "team_name" in shots.columns:
+shots_view = get_shots_view(fact_shots, dim_team=dim_team, dim_player=dim_player)
+events_view = get_events_view(fact_events, dim_team=dim_team, dim_player=dim_player)
+
+shots = shots_view[shots_view["match_id"] == match_id].copy()
+if team_name and "team_name" in shots.columns:
     shots = shots[shots["team_name"] == team_name]
 
 st.markdown("### Team shot profile")
@@ -35,7 +39,7 @@ if "shot_outcome" in shots.columns:
     st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("### Event summary (match/team)")
-events = fact_events[fact_events["match_id"] == match_id].copy()
-if "team_name" in events.columns:
+events = events_view[events_view["match_id"] == match_id].copy()
+if team_name and "team_name" in events.columns:
     events = events[events["team_name"] == team_name]
 st.dataframe(events.head(200), use_container_width=True)

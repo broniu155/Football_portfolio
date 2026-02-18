@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.components.data import load_star_schema
 from app.components.filters import sidebar_filters
+from app.components.model_views import get_shots_view
 
 st.set_page_config(page_title="Match Report", page_icon="📊", layout="wide")
 
@@ -19,8 +20,9 @@ match_id, team_name, player_name = sidebar_filters(dim_match, dim_team, dim_play
 
 st.title("📊 Match Report")
 
-shots = fact_shots[fact_shots["match_id"] == match_id].copy()
-if "team_name" in shots.columns:
+shots_view = get_shots_view(fact_shots, dim_team=dim_team, dim_player=dim_player)
+shots = shots_view[shots_view["match_id"] == match_id].copy()
+if team_name and "team_name" in shots.columns:
     shots = shots[shots["team_name"] == team_name]
 if player_name and "player_name" in shots.columns:
     shots = shots[shots["player_name"] == player_name]
