@@ -1,25 +1,25 @@
 # Data Quality Report
 
 ## Run Mode
-- Append mode: True
+- Append mode: False
 
 ## Processor File Summary
-- `events`: found=3465, skipped_unchanged=3465, processed=0, parse_failures=0
-- `competitions`: found=1, skipped_unchanged=1, processed=0, parse_failures=0
-- `matches`: found=75, skipped_unchanged=75, processed=0, parse_failures=0
-- `lineups`: found=3464, skipped_unchanged=3464, processed=0, parse_failures=0
-- `three-sixty`: found=326, skipped_unchanged=323, processed=3, parse_failures=6
+- `events`: found=3465, skipped_unchanged=0, processed=3465, parse_failures=0
+- `competitions`: found=1, skipped_unchanged=0, processed=1, parse_failures=0
+- `matches`: found=75, skipped_unchanged=0, processed=75, parse_failures=0
+- `lineups`: found=3464, skipped_unchanged=0, processed=3464, parse_failures=0
+- `three-sixty`: found=326, skipped_unchanged=0, processed=326, parse_failures=6
 
 ## Output Row Counts (This Run)
-- `events`: 0 rows
-- `competitions`: 0 rows
-- `matches`: 0 rows
-- `lineups_players`: 0 rows
-- `three_sixty`: 0 rows
-- `three_sixty_freeze_frames`: 0 rows
-- `three_sixty_visible_area`: 0 rows
-- `teams`: 22 rows
-- `players`: 38 rows
+- `events`: 12,188,951 rows
+- `competitions`: 75 rows
+- `matches`: 3,464 rows
+- `lineups_players`: 131,901 rows
+- `three_sixty`: 1,027,908 rows
+- `three_sixty_freeze_frames`: 15,584,040 rows
+- `three_sixty_visible_area`: 1,027,908 rows
+- `teams`: 314 rows
+- `players`: 10,805 rows
 
 ## Required Column Checks
 - `events`: PASS
@@ -33,8 +33,12 @@
 - `players`: PASS
 
 ## Key ID Null Rates
-- `three_sixty`: match_id=not computed, event_uuid=not computed (sampled rows: 0)
-- `three_sixty_freeze_frames`: match_id=not computed, event_uuid=not computed, player_id=not computed (sampled rows: 0)
-- `three_sixty_visible_area`: match_id=not computed, event_uuid=not computed (sampled rows: 0)
-- `teams`: team_id=0.00% (sampled rows: 22)
-- `players`: player_id=0.00%, team_id=0.00% (sampled rows: 38)
+- `events`: match_id=0.00%, team_id=0.00%, player_id=0.43% (sampled rows: 12,188,951)
+- `competitions`: competition_id=0.00%, season_id=0.00% (sampled rows: 75)
+- `matches`: match_id=0.00%, competition_id=0.00%, season_id=0.00%, home_team_id=0.00%, away_team_id=0.00% (sampled rows: 3,464)
+- `lineups_players`: match_id=0.00%, team_id=0.00%, player_id=0.00% (sampled rows: 131,901)
+- `three_sixty`: match_id=0.00%, event_uuid=0.00% (sampled rows: 1,027,908)
+- `three_sixty_freeze_frames`: match_id=0.00%, event_uuid=0.00%, player_id=100.00% (sampled rows: 15,584,040)
+- `three_sixty_visible_area`: match_id=0.00%, event_uuid=0.00% (sampled rows: 1,027,908)
+- `teams`: team_id=0.00% (sampled rows: 314)
+- `players`: player_id=0.00%, team_id=0.00% (sampled rows: 10,805)
