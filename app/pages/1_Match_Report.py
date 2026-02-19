@@ -11,12 +11,27 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.components.data import get_events, get_shots, load_dimensions
 from app.components.filters import sidebar_filters_cascading
-from app.components.match_summary import render_match_summary
+from app.components.match_stats import (
+    compute_match_stats,
+    render_match_score_header,
+    render_match_stats_panel,
+    validate_goals_consistency,
+)
 from app.components.model_views import get_shots_view
 from app.components.ui import setup_page
 from app.components.viz import draw_pitch_figure
 
-setup_page(page_title="Match Report", page_icon="📊")
+setup_page(page_title="Match Report", page_icon=":bar_chart:")
+
+
+def _apply_context_filters(df: pd.DataFrame, team_id: int | None, player_id: int | None) -> pd.DataFrame:
+    out = df.copy()
+    if team_id is not None and "team_id" in out.columns:
+        out = out[pd.to_numeric(out["team_id"], errors="coerce") == int(team_id)]
+    if player_id is not None and "player_id" in out.columns:
+        out = out[pd.to_numeric(out["player_id"], errors="coerce") == int(player_id)]
+    return out
+
 
 dim_match, dim_team, dim_player = load_dimensions()
 selection = sidebar_filters_cascading(dim_match)
@@ -38,14 +53,39 @@ with st.spinner("Loading match context..."):
 
 shots = get_shots_view(context_shots, dim_team=dim_team, dim_player=dim_player)
 
-st.markdown('<div class="section-title">Broadcast Match Summary</div>', unsafe_allow_html=True)
-render_match_summary(
+official_stats = compute_match_stats(
+    fact_events=match_events,
+    fact_shots=match_shots,
     dim_match=dim_match,
-    fact_events_match=match_events,
-    fact_shots_match=match_shots,
-    fact_shots_context=context_shots,
-    selection=selection,
+    match_id=int(match_id),
 )
+
+st.markdown('<div class="section-title">Match Score</div>', unsafe_allow_html=True)
+render_match_score_header(official_stats)
+
+apply_stats_filters = st.toggle(
+    "Apply current filters to stats",
+    value=False,
+    help="OFF shows full match stats for both teams.",
+)
+stats_events = _apply_context_filters(match_events, team_id=team_id, player_id=player_id) if apply_stats_filters else match_events
+stats_shots = _apply_context_filters(match_shots, team_id=team_id, player_id=player_id) if apply_stats_filters else match_shots
+stats_payload = compute_match_stats(
+    fact_events=stats_events,
+    fact_shots=stats_shots,
+    dim_match=dim_match,
+    match_id=int(match_id),
+)
+if not apply_stats_filters:
+    stats_payload["metrics"]["Goals"] = (official_stats.get("home_score"), official_stats.get("away_score"))
+
+try:
+    validate_goals_consistency(stats_payload, apply_filtered_stats=apply_stats_filters)
+except AssertionError as err:
+    st.error(str(err))
+
+st.markdown('<div class="section-title">Match Stats</div>', unsafe_allow_html=True)
+render_match_stats_panel(stats_payload, filtered=apply_stats_filters)
 
 st.markdown('<div class="section-title">Context</div>', unsafe_allow_html=True)
 chips = [selection["competition_name"], selection["season_name"], selection["team_name"], selection["player_name"]]
@@ -109,7 +149,8 @@ with right:
             paper_bgcolor="#0b1220",
             plot_bgcolor="#111a2b",
             font=dict(color="#e7edf7"),
-            margin=dict(l=10, r=10, t=30, b=10),
+            legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0),
+            margin=dict(l=10, r=10, t=30, b=80),
         )
         st.plotly_chart(fig2, use_container_width=True)
     else:
