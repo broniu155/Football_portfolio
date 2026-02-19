@@ -61,7 +61,12 @@ def get_shots_view(
     view["x"] = pd.to_numeric(_coalesce(view, ["x", "location_x"]), errors="coerce")
     view["y"] = pd.to_numeric(_coalesce(view, ["y", "location_y"]), errors="coerce")
     view["xg"] = pd.to_numeric(_coalesce(view, ["xg", "shot_statsbomb_xg"]), errors="coerce")
+    view["shot_outcome_name"] = _coalesce(view, ["shot_outcome_name", "shot_outcome"])
     view["shot_outcome"] = _coalesce(view, ["shot_outcome_name", "shot_outcome", "shot_outcome_id"])
+    view["shot_type_name"] = _coalesce(view, ["shot_type_name", "shot_type"])
+    view["body_part_name"] = _coalesce(view, ["body_part_name", "shot_body_part_name", "body_part", "shot_body_part"])
+    view["shot_type"] = _coalesce(view, ["shot_type_name", "shot_type"])
+    view["body_part"] = _coalesce(view, ["body_part_name", "shot_body_part_name", "body_part", "shot_body_part"])
     outcome_norm = view["shot_outcome"].astype("string").str.strip().str.lower()
     goal_mask = outcome_norm.eq("goal")
     if "shot_outcome_id" in view.columns:

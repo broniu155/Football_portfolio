@@ -80,6 +80,24 @@ def main() -> int:
     }
     has_outcome_name = "shot_outcome_name" in fact_shots_cols
     has_outcome_id = "shot_outcome_id" in fact_shots_cols
+    has_legacy_outcome = "shot_outcome" in fact_shots_cols
+
+    if has_legacy_outcome and has_outcome_name:
+        redundant_outcome = one(
+            con,
+            f"""
+            SELECT COUNT(*)
+            FROM {relations['fact_shots']}
+            WHERE lower(trim(COALESCE(shot_outcome, ''))) = lower(trim(COALESCE(shot_outcome_name, '')))
+              AND NULLIF(trim(COALESCE(shot_outcome_name, '')), '') IS NOT NULL
+            """,
+        )
+        if redundant_outcome > 0:
+            print(
+                "[FAIL] Redundant shot outcome columns detected: "
+                f"{redundant_outcome} rows have identical shot_outcome and shot_outcome_name."
+            )
+            failed = True
 
     missing_labels = 0
     if has_outcome_id:
@@ -140,6 +158,29 @@ def main() -> int:
             failed = True
         else:
             print(f"[PASS] Referential integrity for fact_shots.{fact_key} -> {dim_table}.{dim_key}")
+
+    label_pairs = [("shot_type_id", "shot_type_name"), ("body_part_id", "body_part_name")]
+    for id_col, name_col in label_pairs:
+        if id_col not in fact_shots_cols:
+            continue
+        if name_col not in fact_shots_cols:
+            print(f"[FAIL] fact_shots has {id_col} but missing {name_col}.")
+            failed = True
+            continue
+        missing_pair_labels = one(
+            con,
+            f"""
+            SELECT COUNT(*)
+            FROM {relations['fact_shots']}
+            WHERE {id_col} IS NOT NULL
+              AND NULLIF(TRIM(COALESCE({name_col}, '')), '') IS NULL
+            """,
+        )
+        if missing_pair_labels > 0:
+            print(f"[FAIL] fact_shots rows missing {name_col} for populated {id_col}: {missing_pair_labels}")
+            failed = True
+        else:
+            print(f"[PASS] {id_col} has matching {name_col} labels.")
 
     if has_outcome_id and dim_outcome_rel is not None:
         where_parts = ["1=1"]

@@ -211,6 +211,13 @@ def _query_fact_rows(
     return conn.execute(sql).df()
 
 
+def _concat_non_empty(frames: list[pd.DataFrame], fallback_columns: list[str]) -> pd.DataFrame:
+    valid = [frame for frame in frames if frame is not None and not frame.empty]
+    if not valid:
+        return pd.DataFrame(columns=fallback_columns)
+    return pd.concat(valid, ignore_index=True)
+
+
 def _dedupe_fact_shots(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -258,6 +265,54 @@ def _enrich_shot_outcome_name(shots: pd.DataFrame, base_dir: Path) -> pd.DataFra
                         enriched["shot_outcome_name_dim"]
                     )
                     enriched = enriched.drop(columns=["shot_outcome_name_dim"])
+
+    # Canonical naming for body-part id/name (legacy exports may use shot_body_part_*).
+    if "body_part_id" not in enriched.columns and "shot_body_part_id" in enriched.columns:
+        enriched["body_part_id"] = enriched["shot_body_part_id"]
+    if "body_part_name" not in enriched.columns and "shot_body_part_name" in enriched.columns:
+        enriched["body_part_name"] = enriched["shot_body_part_name"]
+
+    # Merge shot type labels.
+    if "shot_type_name" not in enriched.columns:
+        enriched["shot_type_name"] = pd.NA
+    if "shot_type" in enriched.columns:
+        enriched["shot_type_name"] = enriched["shot_type_name"].combine_first(enriched["shot_type"])
+    if "shot_type_id" in enriched.columns:
+        dim_shot_type_path = _resolve_table_file(base_dir, "dim_shot_type")
+        if dim_shot_type_path is not None:
+            dim_shot_type = _read_table(str(dim_shot_type_path))
+            if {"shot_type_id", "shot_type_name"}.issubset(dim_shot_type.columns):
+                lookup = _normalize_lookup(dim_shot_type, "shot_type_id", "shot_type_name")
+                if not lookup.empty:
+                    enriched["shot_type_id"] = pd.to_numeric(enriched["shot_type_id"], errors="coerce")
+                    enriched = enriched.merge(lookup, on="shot_type_id", how="left", suffixes=("", "_dim"))
+                    if "shot_type_name_dim" in enriched.columns:
+                        enriched["shot_type_name"] = enriched["shot_type_name"].combine_first(enriched["shot_type_name_dim"])
+                        enriched = enriched.drop(columns=["shot_type_name_dim"])
+
+    # Merge body part labels.
+    if "body_part_name" not in enriched.columns:
+        enriched["body_part_name"] = pd.NA
+    if "body_part" in enriched.columns:
+        enriched["body_part_name"] = enriched["body_part_name"].combine_first(enriched["body_part"])
+    if "body_part_id" in enriched.columns:
+        dim_body_part_path = _resolve_table_file(base_dir, "dim_body_part")
+        if dim_body_part_path is not None:
+            dim_body_part = _read_table(str(dim_body_part_path))
+            if {"body_part_id", "body_part_name"}.issubset(dim_body_part.columns):
+                lookup = _normalize_lookup(dim_body_part, "body_part_id", "body_part_name")
+                if not lookup.empty:
+                    enriched["body_part_id"] = pd.to_numeric(enriched["body_part_id"], errors="coerce")
+                    enriched = enriched.merge(lookup, on="body_part_id", how="left", suffixes=("", "_dim"))
+                    if "body_part_name_dim" in enriched.columns:
+                        enriched["body_part_name"] = enriched["body_part_name"].combine_first(enriched["body_part_name_dim"])
+                        enriched = enriched.drop(columns=["body_part_name_dim"])
+
+    if {"shot_outcome", "shot_outcome_name"}.issubset(enriched.columns):
+        lhs = enriched["shot_outcome"].fillna("").astype(str).str.strip().str.lower()
+        rhs = enriched["shot_outcome_name"].fillna("").astype(str).str.strip().str.lower()
+        if lhs.equals(rhs):
+            enriched = enriched.drop(columns=["shot_outcome"])
 
     return enriched
 
@@ -443,8 +498,7 @@ def get_teams_for_match(match_id: int) -> pd.DataFrame:
                 f"WHERE TRY_CAST(match_id AS BIGINT) = {int(match_id)}"
             )
             candidates.append(conn.execute(q).df())
-        if candidates:
-            teams_df = pd.concat(candidates, ignore_index=True)
+        teams_df = _concat_non_empty(candidates, fallback_columns=["team_id", "team_name"])
 
     if teams_df.empty:
         return pd.DataFrame(columns=["team_id", "team_name"])
@@ -506,7 +560,9 @@ def get_players_for_match(match_id: int, team_id: int | None = None) -> pd.DataF
     if not frames:
         return pd.DataFrame(columns=["player_id", "player_name", "team_id", "team_name"])
 
-    players = pd.concat(frames, ignore_index=True)
+    players = _concat_non_empty(frames, fallback_columns=["player_id", "team_id", "player_name"])
+    if players.empty:
+        return pd.DataFrame(columns=["player_id", "player_name", "team_id", "team_name"])
     players = players.dropna(subset=["player_id"]).copy()
     players["player_id"] = pd.to_numeric(players["player_id"], errors="coerce")
     players = players.dropna(subset=["player_id"])

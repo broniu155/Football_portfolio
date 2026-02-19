@@ -31,6 +31,12 @@ FACT_CANDIDATE_COLUMNS = [
     "pass_outcome_name",
     "shot_outcome_id",
     "shot_outcome_name",
+    "shot_type_id",
+    "shot_type_name",
+    "body_part_id",
+    "body_part_name",
+    "shot_body_part_id",
+    "shot_body_part_name",
     "duel_type_id",
     "duel_type_name",
     "duel_outcome_id",
@@ -80,6 +86,10 @@ FACT_SHOT_BASE_COLUMNS = [
     "shot_statsbomb_xg",
     "shot_outcome_id",
     "shot_outcome_name",
+    "shot_type_id",
+    "shot_type_name",
+    "body_part_id",
+    "body_part_name",
     "under_pressure",
 ]
 
@@ -862,7 +872,7 @@ def build_events_and_shots(
         )
         write_empty(
             fact_shots_path,
-            FACT_SHOT_BASE_COLUMNS + ["shot_type_id", "shot_body_part_id", ZONE_ID_COLUMN, TIME_KEY_COLUMN],
+            FACT_SHOT_BASE_COLUMNS + [ZONE_ID_COLUMN, TIME_KEY_COLUMN],
         )
         return 0, 0, set(), {
             "event_type": {},
@@ -870,6 +880,8 @@ def build_events_and_shots(
             "position": {},
             "pass_outcome": {},
             "shot_outcome": {},
+            "shot_type": {},
+            "body_part": {},
             "duel_type": {},
             "duel_outcome": {},
         }
@@ -883,6 +895,8 @@ def build_events_and_shots(
         "position": {},
         "pass_outcome": {},
         "shot_outcome": {},
+        "shot_type": {},
+        "body_part": {},
         "duel_type": {},
         "duel_outcome": {},
     }
@@ -900,13 +914,9 @@ def build_events_and_shots(
         fact_cols.append(ZONE_ID_COLUMN)
     fact_cols.extend([TIME_KEY_COLUMN, "competition_id", "season_id"])
 
-    shot_cols = [c for c in FACT_SHOT_BASE_COLUMNS if c in source_cols]
+    shot_cols = list(FACT_SHOT_BASE_COLUMNS)
     if "shot_outcome_id" not in shot_cols:
         shot_cols.append("shot_outcome_id")
-    if "shot_type_id" in source_cols:
-        shot_cols.append("shot_type_id")
-    if "shot_body_part_id" in source_cols:
-        shot_cols.append("shot_body_part_id")
     if has_location:
         shot_cols.append(ZONE_ID_COLUMN)
     shot_cols.append(TIME_KEY_COLUMN)
@@ -1011,7 +1021,16 @@ def build_events_and_shots(
                         if col == TIME_KEY_COLUMN:
                             shot_row[col] = "" if time_key is None else time_key
                             continue
-                        value = row.get(col, "")
+                        if col == "shot_outcome_name":
+                            value = row.get("shot_outcome_name", "") or row.get("shot_outcome", "")
+                        elif col == "shot_type_name":
+                            value = row.get("shot_type_name", "") or row.get("shot_type", "")
+                        elif col == "body_part_id":
+                            value = row.get("body_part_id", "") or row.get("shot_body_part_id", "")
+                        elif col == "body_part_name":
+                            value = row.get("body_part_name", "") or row.get("shot_body_part_name", "")
+                        else:
+                            value = row.get(col, "")
                         shot_row[col] = "" if is_nested_like(value) else value
                     shots_writer.writerow(shot_row)
                     shots_written += 1
@@ -1035,7 +1054,17 @@ def build_events_and_shots(
             upsert_id_name(
                 event_small_dims["shot_outcome"],
                 row.get("shot_outcome_id", ""),
-                row.get("shot_outcome_name", ""),
+                row.get("shot_outcome_name", "") or row.get("shot_outcome", ""),
+            )
+            upsert_id_name(
+                event_small_dims["shot_type"],
+                row.get("shot_type_id", ""),
+                row.get("shot_type_name", "") or row.get("shot_type", ""),
+            )
+            upsert_id_name(
+                event_small_dims["body_part"],
+                row.get("body_part_id", "") or row.get("shot_body_part_id", ""),
+                row.get("body_part_name", "") or row.get("shot_body_part_name", ""),
             )
             upsert_id_name(
                 event_small_dims["duel_type"],
@@ -1074,6 +1103,8 @@ def build_small_dims(output_dir: Path, small_dims: dict[str, dict[int, str]]) ->
         ("dim_position.csv", "position_id", "position_name", "position"),
         ("dim_pass_outcome.csv", "pass_outcome_id", "pass_outcome_name", "pass_outcome"),
         ("dim_shot_outcome.csv", "shot_outcome_id", "shot_outcome_name", "shot_outcome"),
+        ("dim_shot_type.csv", "shot_type_id", "shot_type_name", "shot_type"),
+        ("dim_body_part.csv", "body_part_id", "body_part_name", "body_part"),
         ("dim_duel_type.csv", "duel_type_id", "duel_type_name", "duel_type"),
         ("dim_duel_outcome.csv", "duel_outcome_id", "duel_outcome_name", "duel_outcome"),
     ]
@@ -1097,6 +1128,9 @@ def write_model_notes(output_dir: Path) -> int:
 - `dim_match`: one row per `match_id`
 - `dim_team`: one row per `team_id`
 - `dim_player`: one row per `player_id`
+- `dim_shot_outcome`: one row per `shot_outcome_id`
+- `dim_shot_type`: one row per `shot_type_id`
+- `dim_body_part`: one row per `body_part_id`
 - `dim_time`: one row per `(period, minute, second)` via `time_key`
 - `dim_zone`: one row per static pitch zone (`6x5` grid)
 - `fact_events`: one row per `event_id`

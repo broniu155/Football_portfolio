@@ -38,9 +38,12 @@ def draw_pitch_figure(shots_df: pd.DataFrame, title: str, subtitle: str | None =
     shots["x"] = pd.to_numeric(_coalesce_column(shots, ["x", "location_x"]), errors="coerce")
     shots["y"] = pd.to_numeric(_coalesce_column(shots, ["y", "location_y"]), errors="coerce")
     shots["xg"] = pd.to_numeric(_coalesce_column(shots, ["xg", "shot_statsbomb_xg"]), errors="coerce")
-    shots["shot_outcome"] = _coalesce_column(shots, ["shot_outcome", "shot_outcome_name"], default="Unknown")
-    shots["shot_type"] = _coalesce_column(shots, ["shot_type", "shot_type_name"])
-    shots["body_part"] = _coalesce_column(shots, ["shot_body_part", "shot_body_part_name"])
+    shots["shot_outcome"] = _coalesce_column(shots, ["shot_outcome_name", "shot_outcome"], default="Unknown")
+    shots["shot_type"] = _coalesce_column(shots, ["shot_type_name", "shot_type"])
+    shots["body_part"] = _coalesce_column(
+        shots,
+        ["body_part_name", "shot_body_part_name", "body_part", "shot_body_part"],
+    )
 
     shots = shots.dropna(subset=["x", "y"])
     if shots.empty:
