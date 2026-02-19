@@ -107,6 +107,50 @@ def _read_table(path_str: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _normalize_lookup(table: pd.DataFrame, id_col: str, name_col: str) -> pd.DataFrame:
+    if not {id_col, name_col}.issubset(table.columns):
+        return pd.DataFrame(columns=[id_col, name_col])
+    lookup = table[[id_col, name_col]].copy()
+    lookup[id_col] = pd.to_numeric(lookup[id_col], errors="coerce")
+    lookup = lookup.dropna(subset=[id_col]).drop_duplicates(subset=[id_col])
+    lookup[id_col] = lookup[id_col].astype(int)
+    lookup[name_col] = lookup[name_col].astype("string")
+    return lookup
+
+
+def _enrich_dim_match(dim_match: pd.DataFrame, dim_team: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
+    enriched = dim_match.copy()
+
+    for id_col in ("competition_id", "season_id", "home_team_id", "away_team_id"):
+        if id_col in enriched.columns:
+            enriched[id_col] = pd.to_numeric(enriched[id_col], errors="coerce")
+
+    if "competition_name" not in enriched.columns and "competition_id" in enriched.columns:
+        comp_path = _resolve_table_file(base_dir, "dim_competition")
+        if comp_path is not None:
+            comp_df = _normalize_lookup(_read_table(str(comp_path)), "competition_id", "competition_name")
+            if not comp_df.empty:
+                enriched = enriched.merge(comp_df, on="competition_id", how="left")
+
+    if "season_name" not in enriched.columns and "season_id" in enriched.columns:
+        season_path = _resolve_table_file(base_dir, "dim_season")
+        if season_path is not None:
+            season_df = _normalize_lookup(_read_table(str(season_path)), "season_id", "season_name")
+            if not season_df.empty:
+                enriched = enriched.merge(season_df, on="season_id", how="left")
+
+    team_lookup = _normalize_lookup(dim_team, "team_id", "team_name")
+    if not team_lookup.empty:
+        if "home_team_name" not in enriched.columns and "home_team_id" in enriched.columns:
+            home_lookup = team_lookup.rename(columns={"team_id": "home_team_id", "team_name": "home_team_name"})
+            enriched = enriched.merge(home_lookup, on="home_team_id", how="left")
+        if "away_team_name" not in enriched.columns and "away_team_id" in enriched.columns:
+            away_lookup = team_lookup.rename(columns={"team_id": "away_team_id", "team_name": "away_team_name"})
+            enriched = enriched.merge(away_lookup, on="away_team_id", how="left")
+
+    return enriched
+
+
 @st.cache_resource(show_spinner=False)
 def _get_duckdb_connection(cache_key: str) -> duckdb.DuckDBPyConnection:
     conn = duckdb.connect(database=":memory:")
@@ -269,7 +313,11 @@ def _resolve_active_table_paths(render_mode_selector: bool = False) -> tuple[str
 
 @st.cache_data(show_spinner=False)
 def _load_dimensions_cached(dim_match_path: str, dim_team_path: str, dim_player_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    return _read_table(dim_match_path), _read_table(dim_team_path), _read_table(dim_player_path)
+    dim_match = _read_table(dim_match_path)
+    dim_team = _read_table(dim_team_path)
+    dim_player = _read_table(dim_player_path)
+    dim_match = _enrich_dim_match(dim_match, dim_team, Path(dim_match_path).parent)
+    return dim_match, dim_team, dim_player
 
 
 def _load_dimensions_from_paths(render_mode_selector: bool) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
