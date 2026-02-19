@@ -79,6 +79,7 @@ FACT_SHOT_BASE_COLUMNS = [
     "shot_end_location_y",
     "shot_statsbomb_xg",
     "shot_outcome_id",
+    "shot_outcome_name",
     "under_pressure",
 ]
 
@@ -924,8 +925,12 @@ def build_events_and_shots(
     rows_processed = 0
     events_written = 0
     shots_written = 0
+    duplicate_events_skipped = 0
+    duplicate_shots_skipped = 0
     time_values: set[tuple[int, int, int]] = set()
     shot_type_ids = set(KNOWN_SHOT_TYPE_IDS)
+    seen_event_keys: set[tuple[int, str]] = set()
+    seen_shot_keys: set[tuple[int, str]] = set()
 
     with (
         fact_events_path.open("w", encoding="utf-8", newline="") as f_events_out,
@@ -953,28 +958,38 @@ def build_events_and_shots(
                 zone_id = compute_zone_id(row.get("location_x", ""), row.get("location_y", ""))
 
             match_id = as_int(row.get("match_id", ""))
+            event_id_raw = (row.get("event_id") or "").strip()
+            event_pk: tuple[int, str] | None = None
+            if match_id is not None and event_id_raw:
+                event_pk = (match_id, event_id_raw)
+
             match_meta = matches_lookup.get(match_id, {}) if match_id is not None else {}
             competition_id = match_meta.get("competition_id")
             season_id = match_meta.get("season_id")
 
-            out_row: dict[str, object] = {}
-            for col in fact_cols:
-                if col == ZONE_ID_COLUMN:
-                    out_row[col] = "" if zone_id is None else zone_id
-                    continue
-                if col == TIME_KEY_COLUMN:
-                    out_row[col] = "" if time_key is None else time_key
-                    continue
-                if col == "competition_id":
-                    out_row[col] = "" if competition_id is None else competition_id
-                    continue
-                if col == "season_id":
-                    out_row[col] = "" if season_id is None else season_id
-                    continue
-                value = row.get(col, "")
-                out_row[col] = "" if is_nested_like(value) else value
-            events_writer.writerow(out_row)
-            events_written += 1
+            if event_pk is not None and event_pk in seen_event_keys:
+                duplicate_events_skipped += 1
+            else:
+                if event_pk is not None:
+                    seen_event_keys.add(event_pk)
+                out_row: dict[str, object] = {}
+                for col in fact_cols:
+                    if col == ZONE_ID_COLUMN:
+                        out_row[col] = "" if zone_id is None else zone_id
+                        continue
+                    if col == TIME_KEY_COLUMN:
+                        out_row[col] = "" if time_key is None else time_key
+                        continue
+                    if col == "competition_id":
+                        out_row[col] = "" if competition_id is None else competition_id
+                        continue
+                    if col == "season_id":
+                        out_row[col] = "" if season_id is None else season_id
+                        continue
+                    value = row.get(col, "")
+                    out_row[col] = "" if is_nested_like(value) else value
+                events_writer.writerow(out_row)
+                events_written += 1
 
             type_id = as_int(row.get("type_id", ""))
             type_name_norm = (row.get("type_name") or "").strip().lower()
@@ -983,18 +998,23 @@ def build_events_and_shots(
             is_shot = type_name_norm == "shot" or (type_id is not None and type_id in shot_type_ids)
 
             if is_shot:
-                shot_row: dict[str, object] = {}
-                for col in shot_cols:
-                    if col == ZONE_ID_COLUMN:
-                        shot_row[col] = "" if zone_id is None else zone_id
-                        continue
-                    if col == TIME_KEY_COLUMN:
-                        shot_row[col] = "" if time_key is None else time_key
-                        continue
-                    value = row.get(col, "")
-                    shot_row[col] = "" if is_nested_like(value) else value
-                shots_writer.writerow(shot_row)
-                shots_written += 1
+                if event_pk is not None and event_pk in seen_shot_keys:
+                    duplicate_shots_skipped += 1
+                else:
+                    if event_pk is not None:
+                        seen_shot_keys.add(event_pk)
+                    shot_row: dict[str, object] = {}
+                    for col in shot_cols:
+                        if col == ZONE_ID_COLUMN:
+                            shot_row[col] = "" if zone_id is None else zone_id
+                            continue
+                        if col == TIME_KEY_COLUMN:
+                            shot_row[col] = "" if time_key is None else time_key
+                            continue
+                        value = row.get(col, "")
+                        shot_row[col] = "" if is_nested_like(value) else value
+                    shots_writer.writerow(shot_row)
+                    shots_written += 1
 
             upsert_id_name(event_small_dims["event_type"], row.get("type_id", ""), row.get("type_name", ""))
             upsert_id_name(
@@ -1032,6 +1052,16 @@ def build_events_and_shots(
 
     if rows_processed == 0:
         warn("events.csv has 0 data rows. Skipping fact_events content and event-derived small dims.")
+    if duplicate_events_skipped > 0:
+        warn(
+            "Duplicate event rows detected in events.csv; "
+            f"skipped {duplicate_events_skipped:,} duplicates using (match_id, event_id)."
+        )
+    if duplicate_shots_skipped > 0:
+        warn(
+            "Duplicate shot rows detected in events.csv; "
+            f"skipped {duplicate_shots_skipped:,} duplicates using (match_id, event_id)."
+        )
 
     return events_written, shots_written, time_values, event_small_dims
 

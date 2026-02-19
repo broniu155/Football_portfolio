@@ -38,7 +38,14 @@ events = get_events_view(fact_events, dim_team=dim_team, dim_player=dim_player)
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Shots", len(shots))
 k2.metric("Total xG", f"{shots['xg'].fillna(0).sum():.2f}" if "xg" in shots.columns else "-")
-k3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()) if "shot_outcome" in shots.columns else 0)
+k3.metric(
+    "Goals",
+    int(shots["is_goal"].sum())
+    if "is_goal" in shots.columns
+    else int(shots["shot_outcome"].astype(str).str.strip().str.lower().eq("goal").sum())
+    if "shot_outcome" in shots.columns
+    else 0,
+)
 k4.metric("Events", len(events))
 
 left, right = st.columns(2)

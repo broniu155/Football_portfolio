@@ -61,7 +61,13 @@ def get_shots_view(
     view["x"] = pd.to_numeric(_coalesce(view, ["x", "location_x"]), errors="coerce")
     view["y"] = pd.to_numeric(_coalesce(view, ["y", "location_y"]), errors="coerce")
     view["xg"] = pd.to_numeric(_coalesce(view, ["xg", "shot_statsbomb_xg"]), errors="coerce")
-    view["shot_outcome"] = _coalesce(view, ["shot_outcome", "shot_outcome_name", "shot_outcome_id"])
+    view["shot_outcome"] = _coalesce(view, ["shot_outcome_name", "shot_outcome", "shot_outcome_id"])
+    outcome_norm = view["shot_outcome"].astype("string").str.strip().str.lower()
+    goal_mask = outcome_norm.eq("goal")
+    if "shot_outcome_id" in view.columns:
+        # StatsBomb canonical goal outcome id.
+        goal_mask = goal_mask | (pd.to_numeric(view["shot_outcome_id"], errors="coerce") == 97)
+    view["is_goal"] = goal_mask.fillna(False)
 
     view = _with_names_from_dims(view, dim_team=dim_team, dim_player=dim_player)
 

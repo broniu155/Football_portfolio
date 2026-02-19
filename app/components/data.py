@@ -211,9 +211,60 @@ def _query_fact_rows(
     return conn.execute(sql).df()
 
 
+def _dedupe_fact_shots(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    if {"match_id", "event_id"}.issubset(df.columns):
+        sort_cols = [col for col in ("match_id", "event_id", "period", "minute", "second") if col in df.columns]
+        ordered = df.sort_values(sort_cols) if sort_cols else df
+        return ordered.drop_duplicates(subset=["match_id", "event_id"], keep="first").reset_index(drop=True)
+
+    if "event_id" in df.columns:
+        sort_cols = [col for col in ("event_id", "period", "minute", "second") if col in df.columns]
+        ordered = df.sort_values(sort_cols) if sort_cols else df
+        return ordered.drop_duplicates(subset=["event_id"], keep="first").reset_index(drop=True)
+
+    return df
+
+
+def _enrich_shot_outcome_name(shots: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
+    if shots.empty:
+        return shots
+
+    enriched = shots.copy()
+    if "shot_outcome_name" not in enriched.columns:
+        enriched["shot_outcome_name"] = pd.NA
+
+    if "shot_outcome" in enriched.columns:
+        # Preserve existing labels if available in older files.
+        enriched["shot_outcome_name"] = enriched["shot_outcome_name"].combine_first(enriched["shot_outcome"])
+
+    if "shot_outcome_id" in enriched.columns:
+        dim_path = _resolve_table_file(base_dir, "dim_shot_outcome")
+        if dim_path is not None:
+            dim_outcome = _read_table(str(dim_path))
+            if {"shot_outcome_id", "shot_outcome_name"}.issubset(dim_outcome.columns):
+                lookup = dim_outcome[["shot_outcome_id", "shot_outcome_name"]].copy()
+                lookup["shot_outcome_id"] = pd.to_numeric(lookup["shot_outcome_id"], errors="coerce")
+                lookup = lookup.dropna(subset=["shot_outcome_id"]).drop_duplicates(subset=["shot_outcome_id"])
+                lookup["shot_outcome_id"] = lookup["shot_outcome_id"].astype(int)
+                lookup["shot_outcome_name"] = lookup["shot_outcome_name"].astype("string")
+
+                enriched["shot_outcome_id"] = pd.to_numeric(enriched["shot_outcome_id"], errors="coerce")
+                enriched = enriched.merge(lookup, on="shot_outcome_id", how="left", suffixes=("", "_dim"))
+                if "shot_outcome_name_dim" in enriched.columns:
+                    enriched["shot_outcome_name"] = enriched["shot_outcome_name"].combine_first(
+                        enriched["shot_outcome_name_dim"]
+                    )
+                    enriched = enriched.drop(columns=["shot_outcome_name_dim"])
+
+    return enriched
+
+
 def _render_generation_commands() -> str:
     return (
-        "python src/etl.py --input-dir data_raw --output-dir data_processed\n"
+        "python src/etl.py --input-dir data_raw --output-dir data_processed --no-append --force\n"
         "python src/export_star_schema.py --input-dir data_processed --output-dir data_model --format parquet"
     )
 
@@ -227,6 +278,8 @@ def _run_local_generation() -> None:
             str(REPO_ROOT / "data_raw"),
             "--output-dir",
             str(REPO_ROOT / "data_processed"),
+            "--no-append",
+            "--force",
         ],
         [
             sys.executable,
@@ -497,8 +550,11 @@ def get_players_for_match(match_id: int, team_id: int | None = None) -> pd.DataF
 
 
 def get_shots(match_id: int, team_id: int | None = None, player_id: int | None = None) -> pd.DataFrame:
-    _, _, table_paths = _resolve_active_table_paths(render_mode_selector=False)
-    return _query_fact_rows(table_paths["fact_shots"], match_id=match_id, team_id=team_id, player_id=player_id)
+    _, base_dir, table_paths = _resolve_active_table_paths(render_mode_selector=False)
+    shots = _query_fact_rows(table_paths["fact_shots"], match_id=match_id, team_id=team_id, player_id=player_id)
+    shots = _dedupe_fact_shots(shots)
+    shots = _enrich_shot_outcome_name(shots, base_dir=base_dir)
+    return shots
 
 
 def get_events(match_id: int, team_id: int | None = None, player_id: int | None = None) -> pd.DataFrame:

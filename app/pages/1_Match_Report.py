@@ -101,8 +101,11 @@ with st.expander("Shot filters", expanded=False):
     open_play_only = col_d.checkbox("Show open play only", value=False)
 
 filtered = shots.copy()
-if only_goals and "shot_outcome" in filtered.columns:
-    filtered = filtered[filtered["shot_outcome"].astype(str).str.lower() == "goal"]
+if only_goals:
+    if "is_goal" in filtered.columns:
+        filtered = filtered[filtered["is_goal"]]
+    elif "shot_outcome" in filtered.columns:
+        filtered = filtered[filtered["shot_outcome"].astype(str).str.strip().str.lower() == "goal"]
 if big_chances and "xg" in filtered.columns:
     filtered = filtered[filtered["xg"].fillna(0) >= 0.3]
 if open_play_only:
@@ -126,7 +129,14 @@ elif fixed_direction and team_id is None:
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Shots", len(filtered))
 k2.metric("Total xG", f"{filtered['xg'].fillna(0).sum():.2f}" if "xg" in filtered.columns else "-")
-k3.metric("Goals", int((filtered["shot_outcome"] == "Goal").sum()) if "shot_outcome" in filtered.columns else 0)
+k3.metric(
+    "Goals",
+    int(filtered["is_goal"].sum())
+    if "is_goal" in filtered.columns
+    else int(filtered["shot_outcome"].astype(str).str.strip().str.lower().eq("goal").sum())
+    if "shot_outcome" in filtered.columns
+    else 0,
+)
 k4.metric("Players", filtered["player_id"].nunique() if "player_id" in filtered.columns else 0)
 
 left, right = st.columns([1.35, 1])

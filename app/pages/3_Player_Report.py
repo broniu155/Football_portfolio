@@ -36,7 +36,14 @@ shots = get_shots_view(raw_shots, dim_team=dim_team, dim_player=dim_player)
 k1, k2, k3 = st.columns(3)
 k1.metric("Shots", len(shots))
 k2.metric("Total xG", f"{shots['xg'].fillna(0).sum():.2f}" if "xg" in shots.columns else "-")
-k3.metric("Goals", int((shots["shot_outcome"] == "Goal").sum()) if "shot_outcome" in shots.columns else 0)
+k3.metric(
+    "Goals",
+    int(shots["is_goal"].sum())
+    if "is_goal" in shots.columns
+    else int(shots["shot_outcome"].astype(str).str.strip().str.lower().eq("goal").sum())
+    if "shot_outcome" in shots.columns
+    else 0,
+)
 
 left, right = st.columns([1.35, 1])
 with left:
