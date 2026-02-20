@@ -37,7 +37,15 @@ def main() -> int:
         return 1
 
     con = duckdb.connect()
-    required = ["fact_shots", "dim_match", "dim_team", "dim_player"]
+    required = [
+        "fact_shots",
+        "dim_match",
+        "dim_team",
+        "dim_player",
+        "dim_shot_outcome",
+        "dim_body_part",
+        "dim_shot_type",
+    ]
 
     relations: dict[str, str] = {}
     try:
@@ -47,11 +55,7 @@ def main() -> int:
         print(f"[FAIL] {exc}")
         return 1
 
-    dim_outcome_rel: str | None = None
-    try:
-        dim_outcome_rel = table_relation(model_dir, "dim_shot_outcome")
-    except FileNotFoundError:
-        dim_outcome_rel = None
+    dim_outcome_rel = relations["dim_shot_outcome"]
 
     failed = False
 
@@ -78,23 +82,26 @@ def main() -> int:
         for r in con.execute(f"SELECT * FROM {relations['fact_shots']} LIMIT 0").description
     }
     has_outcome_id = "shot_outcome_id" in fact_shots_cols
-    has_outcome = "shot_outcome" in fact_shots_cols
-    has_body_part = "body_part" in fact_shots_cols
+    has_body_part_id = "body_part_id" in fact_shots_cols
+    has_shot_type_id = "shot_type_id" in fact_shots_cols
 
-    for redundant_col in ("shot_outcome_name", "body_part_name"):
+    for redundant_col in ("shot_outcome", "shot_outcome_name", "body_part", "body_part_name", "shot_type", "shot_type_name"):
         if redundant_col in fact_shots_cols:
             print(f"[FAIL] fact_shots contains redundant column: {redundant_col}")
             failed = True
 
-    if not has_outcome:
-        print("[FAIL] fact_shots missing canonical column: shot_outcome")
+    if not has_outcome_id:
+        print("[FAIL] fact_shots missing canonical ID column: shot_outcome_id")
         failed = True
-    if not has_body_part:
-        print("[FAIL] fact_shots missing canonical column: body_part")
+    if not has_body_part_id:
+        print("[FAIL] fact_shots missing canonical ID column: body_part_id")
+        failed = True
+    if not has_shot_type_id:
+        print("[FAIL] fact_shots missing canonical ID column: shot_type_id")
         failed = True
 
     missing_labels = 0
-    if has_outcome and has_outcome_id and dim_outcome_rel is not None:
+    if has_outcome_id:
         missing_labels = one(
             con,
             f"""
@@ -103,16 +110,13 @@ def main() -> int:
             LEFT JOIN {dim_outcome_rel} d
               ON TRY_CAST(f.shot_outcome_id AS BIGINT) = TRY_CAST(d.shot_outcome_id AS BIGINT)
             WHERE f.shot_outcome_id IS NOT NULL
-              AND NULLIF(TRIM(COALESCE(f.shot_outcome, d.shot_outcome_name, '')), '') IS NULL
+              AND NULLIF(TRIM(COALESCE(d.shot_outcome_name, '')), '') IS NULL
             """,
         )
-    elif has_outcome and has_outcome_id and dim_outcome_rel is None:
-        print("[WARN] dim_shot_outcome not found; skipping outcome label coverage check.")
-
     if missing_labels > 0:
         print(f"[FAIL] fact_shots rows with missing outcome labels: {missing_labels}")
         failed = True
-    elif has_outcome and has_outcome_id and dim_outcome_rel is not None:
+    elif has_outcome_id:
         print("[PASS] Shot outcome labels are available for mapped outcome IDs.")
 
     fk_checks = [
@@ -140,43 +144,37 @@ def main() -> int:
         else:
             print(f"[PASS] Referential integrity for fact_shots.{fact_key} -> {dim_table}.{dim_key}")
 
-    if has_outcome:
-        outcome_non_null = one(
+    if has_outcome_id:
+        outcome_id_non_null = one(
             con,
             f"""
             SELECT COUNT(*)
             FROM {relations['fact_shots']}
-            WHERE NULLIF(TRIM(COALESCE(shot_outcome, '')), '') IS NULL
+            WHERE TRY_CAST(shot_outcome_id AS BIGINT) IS NULL
             """,
         )
-        if outcome_non_null > 0:
-            print(f"[FAIL] fact_shots rows with missing shot_outcome: {outcome_non_null}")
+        if outcome_id_non_null > 0:
+            print(f"[FAIL] fact_shots rows with missing shot_outcome_id: {outcome_id_non_null}")
             failed = True
         else:
-            print("[PASS] fact_shots.shot_outcome populated.")
+            print("[PASS] fact_shots.shot_outcome_id populated.")
 
-    if has_body_part:
-        body_where = (
-            "TRY_CAST(body_part_id AS BIGINT) IS NOT NULL"
-            if "body_part_id" in fact_shots_cols
-            else "1=1"
-        )
-        missing_body = one(
+    if has_body_part_id:
+        body_id_non_null = one(
             con,
             f"""
             SELECT COUNT(*)
             FROM {relations['fact_shots']}
-            WHERE {body_where}
-              AND NULLIF(TRIM(COALESCE(body_part, '')), '') IS NULL
+            WHERE TRY_CAST(body_part_id AS BIGINT) IS NULL
             """,
         )
-        if missing_body > 0:
-            print(f"[FAIL] fact_shots rows with missing body_part: {missing_body}")
+        if body_id_non_null > 0:
+            print(f"[FAIL] fact_shots rows with missing body_part_id: {body_id_non_null}")
             failed = True
         else:
-            print("[PASS] fact_shots.body_part populated.")
+            print("[PASS] fact_shots.body_part_id populated.")
 
-    if has_outcome and has_outcome_id and dim_outcome_rel is not None:
+    if has_outcome_id:
         where_parts = ["1=1"]
         if args.match_id is not None:
             where_parts.append(f"TRY_CAST(f.match_id AS BIGINT) = {int(args.match_id)}")
@@ -193,7 +191,7 @@ def main() -> int:
             LEFT JOIN {dim_outcome_rel} d
               ON TRY_CAST(f.shot_outcome_id AS BIGINT) = TRY_CAST(d.shot_outcome_id AS BIGINT)
             WHERE {where_sql}
-              AND lower(trim(COALESCE(f.shot_outcome, d.shot_outcome_name, ''))) = 'goal'
+              AND lower(trim(COALESCE(d.shot_outcome_name, ''))) = 'goal'
             """,
         )
         goal_ids = con.execute(

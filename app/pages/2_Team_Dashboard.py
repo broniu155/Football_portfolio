@@ -52,7 +52,7 @@ left, right = st.columns(2)
 with left:
     st.markdown('<div class="section-title">Shot Outcomes</div>', unsafe_allow_html=True)
     if "shot_outcome" in shots.columns and len(shots):
-        outcomes = shots["shot_outcome"].fillna("Unknown").value_counts().reset_index()
+        outcomes = shots["shot_outcome"].astype("string").fillna("Unknown").value_counts().reset_index()
         outcomes.columns = ["shot_outcome", "count"]
         fig = px.bar(outcomes, x="shot_outcome", y="count", color="shot_outcome")
         fig.update_layout(

@@ -104,8 +104,22 @@ def _read_table(path_str: str, columns: tuple[str, ...] | None = None) -> pd.Dat
     path = Path(path_str)
     use_columns = list(columns) if columns else None
     if path.suffix.lower() == ".parquet":
-        return pd.read_parquet(path, columns=use_columns)
-    return pd.read_csv(path, usecols=use_columns)
+        try:
+            return pd.read_parquet(path, columns=use_columns)
+        except (KeyError, ValueError):
+            if not use_columns:
+                raise
+            table = pd.read_parquet(path)
+            existing = [c for c in use_columns if c in table.columns]
+            return table[existing]
+    try:
+        return pd.read_csv(path, usecols=use_columns)
+    except ValueError:
+        if not use_columns:
+            raise
+        table = pd.read_csv(path)
+        existing = [c for c in use_columns if c in table.columns]
+        return table[existing]
 
 
 def _normalize_lookup(table: pd.DataFrame, id_col: str, name_col: str) -> pd.DataFrame:
@@ -117,6 +131,31 @@ def _normalize_lookup(table: pd.DataFrame, id_col: str, name_col: str) -> pd.Dat
     lookup[id_col] = lookup[id_col].astype(int)
     lookup[name_col] = lookup[name_col].astype("string")
     return lookup
+
+
+@st.cache_data(show_spinner=False)
+def _load_shot_dims_cached(base_dir_str: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    base_dir = Path(base_dir_str)
+    dim_outcome_path = _resolve_table_file(base_dir, "dim_shot_outcome")
+    dim_body_path = _resolve_table_file(base_dir, "dim_body_part")
+    dim_type_path = _resolve_table_file(base_dir, "dim_shot_type")
+
+    dim_outcome = (
+        _read_table(str(dim_outcome_path), columns=("shot_outcome_id", "shot_outcome_name"))
+        if dim_outcome_path is not None
+        else pd.DataFrame(columns=["shot_outcome_id", "shot_outcome_name"])
+    )
+    dim_body = (
+        _read_table(str(dim_body_path), columns=("body_part_id", "body_part_name"))
+        if dim_body_path is not None
+        else pd.DataFrame(columns=["body_part_id", "body_part_name"])
+    )
+    dim_type = (
+        _read_table(str(dim_type_path), columns=("shot_type_id", "shot_type_name"))
+        if dim_type_path is not None
+        else pd.DataFrame(columns=["shot_type_id", "shot_type_name"])
+    )
+    return dim_outcome, dim_body, dim_type
 
 
 def _enrich_dim_match(dim_match: pd.DataFrame, dim_team: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
@@ -243,79 +282,91 @@ def _dedupe_fact_shots(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _enrich_fact_shots(shots: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
-    if shots.empty:
-        return shots
+def ensure_shot_labels(
+    fact_shots: pd.DataFrame,
+    dim_shot_outcome: pd.DataFrame,
+    dim_body_part: pd.DataFrame,
+    dim_shot_type: pd.DataFrame,
+) -> pd.DataFrame:
+    if fact_shots.empty:
+        return fact_shots
 
-    enriched = shots.copy()
-    if "shot_outcome" not in enriched.columns:
-        enriched["shot_outcome"] = pd.NA
-    if "shot_outcome_name" in enriched.columns:
-        enriched["shot_outcome"] = enriched["shot_outcome"].combine_first(enriched["shot_outcome_name"])
+    shots = fact_shots.copy()
+    if "body_part_id" not in shots.columns and "shot_body_part_id" in shots.columns:
+        shots["body_part_id"] = shots["shot_body_part_id"]
 
-    if "shot_outcome_id" in enriched.columns:
-        dim_path = _resolve_table_file(base_dir, "dim_shot_outcome")
-        if dim_path is not None:
-            dim_outcome = _read_table(str(dim_path), columns=("shot_outcome_id", "shot_outcome_name"))
-            if {"shot_outcome_id", "shot_outcome_name"}.issubset(dim_outcome.columns):
-                lookup = dim_outcome[["shot_outcome_id", "shot_outcome_name"]].copy()
-                lookup["shot_outcome_id"] = pd.to_numeric(lookup["shot_outcome_id"], errors="coerce")
-                lookup = lookup.dropna(subset=["shot_outcome_id"]).drop_duplicates(subset=["shot_outcome_id"])
-                lookup["shot_outcome_id"] = lookup["shot_outcome_id"].astype(int)
-                lookup["shot_outcome_name"] = lookup["shot_outcome_name"].astype("string")
+    id_columns = ("shot_outcome_id", "body_part_id", "shot_type_id")
+    for col in id_columns:
+        if col in shots.columns:
+            shots[col] = pd.to_numeric(shots[col], errors="coerce")
+            shots.loc[shots[col].notna(), col] = shots.loc[shots[col].notna(), col].astype(int)
 
-                enriched["shot_outcome_id"] = pd.to_numeric(enriched["shot_outcome_id"], errors="coerce")
-                enriched = enriched.merge(lookup, on="shot_outcome_id", how="left", suffixes=("", "_dim"))
-                if "shot_outcome_name_dim" in enriched.columns:
-                    enriched["shot_outcome"] = enriched["shot_outcome"].combine_first(enriched["shot_outcome_name_dim"])
-                    enriched = enriched.drop(columns=["shot_outcome_name_dim"])
+    def _legacy_label(series: pd.Series | None) -> pd.Series:
+        if series is None:
+            return pd.Series(pd.NA, index=shots.index, dtype="string")
+        as_text = series.astype("string").str.strip()
+        numeric_like = pd.to_numeric(as_text, errors="coerce").notna()
+        return as_text.where(~numeric_like)
 
-    # Canonical naming for body part fields (legacy exports may use shot_body_part_*).
-    if "body_part_id" not in enriched.columns and "shot_body_part_id" in enriched.columns:
-        enriched["body_part_id"] = enriched["shot_body_part_id"]
-    if "body_part" not in enriched.columns:
-        enriched["body_part"] = pd.NA
-    if "body_part_name" in enriched.columns:
-        enriched["body_part"] = enriched["body_part"].combine_first(enriched["body_part_name"])
-    if "shot_body_part_name" in enriched.columns:
-        enriched["body_part"] = enriched["body_part"].combine_first(enriched["shot_body_part_name"])
+    outcome_lookup = _normalize_lookup(dim_shot_outcome, "shot_outcome_id", "shot_outcome_name")
+    body_lookup = _normalize_lookup(dim_body_part, "body_part_id", "body_part_name")
+    type_lookup = _normalize_lookup(dim_shot_type, "shot_type_id", "shot_type_name")
 
-    # Merge shot type labels.
-    if "shot_type" not in enriched.columns:
-        enriched["shot_type"] = pd.NA
-    if "shot_type_name" in enriched.columns:
-        enriched["shot_type"] = enriched["shot_type"].combine_first(enriched["shot_type_name"])
-    if "shot_type_id" in enriched.columns:
-        dim_shot_type_path = _resolve_table_file(base_dir, "dim_shot_type")
-        if dim_shot_type_path is not None:
-            dim_shot_type = _read_table(str(dim_shot_type_path), columns=("shot_type_id", "shot_type_name"))
-            if {"shot_type_id", "shot_type_name"}.issubset(dim_shot_type.columns):
-                lookup = _normalize_lookup(dim_shot_type, "shot_type_id", "shot_type_name")
-                if not lookup.empty:
-                    enriched["shot_type_id"] = pd.to_numeric(enriched["shot_type_id"], errors="coerce")
-                    enriched = enriched.merge(lookup, on="shot_type_id", how="left", suffixes=("", "_dim"))
-                    if "shot_type_name_dim" in enriched.columns:
-                        enriched["shot_type"] = enriched["shot_type"].combine_first(enriched["shot_type_name_dim"])
-                        enriched = enriched.drop(columns=["shot_type_name_dim"])
+    outcome_map = dict(zip(outcome_lookup["shot_outcome_id"], outcome_lookup["shot_outcome_name"]))
+    body_map = dict(zip(body_lookup["body_part_id"], body_lookup["body_part_name"]))
+    type_map = dict(zip(type_lookup["shot_type_id"], type_lookup["shot_type_name"]))
 
-    # Merge body part labels.
-    if "body_part_id" in enriched.columns:
-        dim_body_part_path = _resolve_table_file(base_dir, "dim_body_part")
-        if dim_body_part_path is not None:
-            dim_body_part = _read_table(str(dim_body_part_path), columns=("body_part_id", "body_part_name"))
-            if {"body_part_id", "body_part_name"}.issubset(dim_body_part.columns):
-                lookup = _normalize_lookup(dim_body_part, "body_part_id", "body_part_name")
-                if not lookup.empty:
-                    enriched["body_part_id"] = pd.to_numeric(enriched["body_part_id"], errors="coerce")
-                    enriched = enriched.merge(lookup, on="body_part_id", how="left", suffixes=("", "_dim"))
-                    if "body_part_name_dim" in enriched.columns:
-                        enriched["body_part"] = enriched["body_part"].combine_first(enriched["body_part_name_dim"])
-                        enriched = enriched.drop(columns=["body_part_name_dim"])
-    drop_if_present = [c for c in ("shot_outcome_name", "body_part_name") if c in enriched.columns]
-    if drop_if_present:
-        enriched = enriched.drop(columns=drop_if_present)
+    legacy_outcome = _legacy_label(shots["shot_outcome_name"]) if "shot_outcome_name" in shots.columns else None
+    if legacy_outcome is None and "shot_outcome" in shots.columns:
+        legacy_outcome = _legacy_label(shots["shot_outcome"])
+    elif legacy_outcome is not None and "shot_outcome" in shots.columns:
+        legacy_outcome = legacy_outcome.combine_first(_legacy_label(shots["shot_outcome"]))
 
-    return enriched
+    legacy_body = _legacy_label(shots["body_part_name"]) if "body_part_name" in shots.columns else None
+    if legacy_body is None and "body_part" in shots.columns:
+        legacy_body = _legacy_label(shots["body_part"])
+    elif legacy_body is not None and "body_part" in shots.columns:
+        legacy_body = legacy_body.combine_first(_legacy_label(shots["body_part"]))
+    if "shot_body_part_name" in shots.columns:
+        legacy_body = (
+            _legacy_label(shots["shot_body_part_name"])
+            if legacy_body is None
+            else legacy_body.combine_first(_legacy_label(shots["shot_body_part_name"]))
+        )
+
+    legacy_type = _legacy_label(shots["shot_type_name"]) if "shot_type_name" in shots.columns else None
+    if legacy_type is None and "shot_type" in shots.columns:
+        legacy_type = _legacy_label(shots["shot_type"])
+    elif legacy_type is not None and "shot_type" in shots.columns:
+        legacy_type = legacy_type.combine_first(_legacy_label(shots["shot_type"]))
+
+    mapped_outcome = (
+        shots["shot_outcome_id"].map(outcome_map).astype("string")
+        if "shot_outcome_id" in shots.columns
+        else pd.Series(pd.NA, index=shots.index, dtype="string")
+    )
+    mapped_body = (
+        shots["body_part_id"].map(body_map).astype("string")
+        if "body_part_id" in shots.columns
+        else pd.Series(pd.NA, index=shots.index, dtype="string")
+    )
+    mapped_type = (
+        shots["shot_type_id"].map(type_map).astype("string")
+        if "shot_type_id" in shots.columns
+        else pd.Series(pd.NA, index=shots.index, dtype="string")
+    )
+
+    shots["shot_outcome"] = (legacy_outcome if legacy_outcome is not None else mapped_outcome).combine_first(mapped_outcome)
+    shots["body_part"] = (legacy_body if legacy_body is not None else mapped_body).combine_first(mapped_body)
+    shots["shot_type"] = (legacy_type if legacy_type is not None else mapped_type).combine_first(mapped_type)
+    for col in ("shot_outcome", "body_part", "shot_type"):
+        shots[col] = shots[col].astype("string")
+
+    drop_cols = [c for c in ("shot_outcome_name", "body_part_name", "shot_type_name") if c in shots.columns]
+    if drop_cols:
+        shots = shots.drop(columns=drop_cols)
+
+    return shots
 
 
 def _render_generation_commands() -> str:
@@ -627,12 +678,15 @@ def get_shots(match_id: int, team_id: int | None = None, player_id: int | None =
         "xg",
         "shot_statsbomb_xg",
         "shot_outcome_id",
-        "shot_outcome",
         "shot_type_id",
+        "body_part_id",
+        # Legacy exports may still carry labels in fact_shots.
+        "shot_outcome",
+        "shot_outcome_name",
         "shot_type",
         "shot_type_name",
-        "body_part_id",
         "body_part",
+        "body_part_name",
         "shot_body_part_id",
         "shot_body_part_name",
         "under_pressure",
@@ -646,7 +700,13 @@ def get_shots(match_id: int, team_id: int | None = None, player_id: int | None =
         selected_columns=shot_projection,
     )
     shots = _dedupe_fact_shots(shots)
-    shots = _enrich_fact_shots(shots, base_dir=base_dir)
+    dim_shot_outcome, dim_body_part, dim_shot_type = _load_shot_dims_cached(str(base_dir.resolve()))
+    shots = ensure_shot_labels(
+        shots,
+        dim_shot_outcome=dim_shot_outcome,
+        dim_body_part=dim_body_part,
+        dim_shot_type=dim_shot_type,
+    )
     return shots
 
 

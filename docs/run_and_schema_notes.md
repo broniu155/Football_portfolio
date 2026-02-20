@@ -8,15 +8,15 @@ streamlit run app/Home.py
 - `app` is a Python package (`app/__init__.py`), and `app/Home.py` now bootstraps repo-root imports for `app.*`.
 
 ## Shot schema changes
-- `fact_shots` uses canonical outcome fields:
+- `fact_shots` is normalized to IDs for shot descriptors:
   - `shot_outcome_id`
-  - `shot_outcome` (canonical display label)
-- `fact_shots` now includes readable shot labels:
-  - `shot_type_id` + `shot_type`
-  - `body_part_id` + `body_part`
-- Redundant denormalized columns are removed from `fact_shots`:
-  - `shot_outcome_name`
-  - `body_part_name`
+  - `shot_type_id`
+  - `body_part_id`
+- Readable labels come from dimensions and are mapped in the app at load time:
+  - `dim_shot_outcome(shot_outcome_id -> shot_outcome_name)`
+  - `dim_shot_type(shot_type_id -> shot_type_name)`
+  - `dim_body_part(body_part_id -> body_part_name)`
+- Redundant denormalized label columns are removed from `fact_shots`.
 - New tiny dimensions exported:
   - `dim_shot_type`
   - `dim_body_part`

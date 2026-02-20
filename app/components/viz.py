@@ -68,13 +68,13 @@ def draw_pitch_figure(shots_df: pd.DataFrame, title: str, subtitle: str | None =
         "Unknown": "#9aa4b2",
     }
 
-    shots["shot_outcome"] = shots["shot_outcome"].fillna("Unknown").astype(str)
+    shots["shot_outcome"] = shots["shot_outcome"].astype("string").fillna("Unknown").astype(str)
     shots["marker_size"] = 7 + (shots["xg"].fillna(0) * 26)
     shots["minute_text"] = _coalesce_column(shots, ["minute"], default="-").astype(str)
     shots["player_text"] = _coalesce_column(shots, ["player_name"], default="-").astype(str)
     shots["xg_text"] = shots["xg"].fillna(0).round(2).astype(str)
-    shots["shot_type_text"] = shots["shot_type"].fillna("-").astype(str)
-    shots["body_part_text"] = shots["body_part"].fillna("-").astype(str)
+    shots["shot_type_text"] = shots["shot_type"].astype("string").fillna("-").astype(str)
+    shots["body_part_text"] = shots["body_part"].astype("string").fillna("-").astype(str)
 
     fig = go.Figure()
     for outcome in sorted(shots["shot_outcome"].unique()):

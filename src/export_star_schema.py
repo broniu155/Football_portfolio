@@ -85,11 +85,8 @@ FACT_SHOT_BASE_COLUMNS = [
     "shot_end_location_y",
     "shot_statsbomb_xg",
     "shot_outcome_id",
-    "shot_outcome",
     "shot_type_id",
-    "shot_type",
     "body_part_id",
-    "body_part",
     "under_pressure",
 ]
 
@@ -141,11 +138,15 @@ DIM_MATCH_COLS = [
 TIME_KEY_COLUMN = "time_key"
 ZONE_ID_COLUMN = "zone_id"
 KNOWN_SHOT_TYPE_IDS = {16}
-REMOVED_FACT_SHOT_COLUMNS = ("shot_outcome_name", "body_part_name")
-FACT_SHOTS_DICT_ENCODE_COLUMNS = {
+REMOVED_FACT_SHOT_COLUMNS = (
     "shot_outcome",
+    "shot_outcome_name",
     "shot_type",
+    "shot_type_name",
     "body_part",
+    "body_part_name",
+)
+FACT_SHOTS_DICT_ENCODE_COLUMNS = {
     "team_name",
     "player_name",
 }
@@ -1039,14 +1040,8 @@ def build_events_and_shots(
                         if col == TIME_KEY_COLUMN:
                             shot_row[col] = "" if time_key is None else time_key
                             continue
-                        if col == "shot_outcome":
-                            value = row.get("shot_outcome", "") or row.get("shot_outcome_name", "")
-                        elif col == "shot_type":
-                            value = row.get("shot_type", "") or row.get("shot_type_name", "")
-                        elif col == "body_part_id":
+                        if col == "body_part_id":
                             value = row.get("body_part_id", "") or row.get("shot_body_part_id", "")
-                        elif col == "body_part":
-                            value = row.get("body_part", "") or row.get("body_part_name", "") or row.get("shot_body_part_name", "")
                         else:
                             value = row.get(col, "")
                         shot_row[col] = "" if is_nested_like(value) else value
@@ -1180,60 +1175,82 @@ def _read_csv_header(csv_path: Path) -> list[str]:
         return next(reader, [])
 
 
-def _validate_fact_shots_csv(csv_path: Path) -> tuple[int, int]:
+def _validate_fact_shots_csv(csv_path: Path) -> tuple[int, int, dict[str, int], int]:
     columns = _read_csv_header(csv_path)
     if not columns:
         raise ValueError("fact_shots export has no columns.")
 
-    missing_columns = sorted({"shot_outcome", "body_part"} - set(columns))
+    required_id_columns = {"shot_outcome_id", "body_part_id", "shot_type_id"}
+    missing_columns = sorted(required_id_columns - set(columns))
     if missing_columns:
-        raise ValueError(f"fact_shots missing canonical columns: {missing_columns}")
+        raise ValueError(f"fact_shots missing canonical *_id columns: {missing_columns}")
 
     present_removed = sorted(set(columns).intersection(REMOVED_FACT_SHOT_COLUMNS))
     if present_removed:
         raise ValueError(f"fact_shots contains removed redundant columns: {present_removed}")
 
-    missing_outcome = 0
-    missing_body_part = 0
-    has_outcome_id = "shot_outcome_id" in columns
-    has_body_part_id = "body_part_id" in columns
+    null_counts = {col: 0 for col in required_id_columns}
+    row_count = 0
 
     with csv_path.open("r", encoding="utf-8", newline="") as f_in:
         reader = csv.DictReader(f_in)
         for row in reader:
-            outcome_id = (row.get("shot_outcome_id", "") or "").strip() if has_outcome_id else ""
-            body_part_id = (row.get("body_part_id", "") or "").strip() if has_body_part_id else ""
-            outcome = (row.get("shot_outcome", "") or "").strip()
-            body_part = (row.get("body_part", "") or "").strip()
+            row_count += 1
+            for col in required_id_columns:
+                value = (row.get(col, "") or "").strip()
+                if value == "":
+                    null_counts[col] += 1
 
-            if (not has_outcome_id or outcome_id != "") and outcome == "":
-                missing_outcome += 1
-            if (not has_body_part_id or body_part_id != "") and body_part == "":
-                missing_body_part += 1
+    return len(columns), csv_path.stat().st_size, null_counts, row_count
 
-    if missing_outcome > 0 or missing_body_part > 0:
-        raise ValueError(
-            "fact_shots has missing canonical labels: "
-            f"shot_outcome_missing={missing_outcome}, body_part_missing={missing_body_part}"
-        )
 
-    return len(columns), csv_path.stat().st_size
+def _count_duplicate_ids(csv_path: Path, id_col: str) -> int:
+    if not csv_path.exists():
+        return 0
+    seen: set[int] = set()
+    duplicates = 0
+    with csv_path.open("r", encoding="utf-8", newline="") as f_in:
+        reader = csv.DictReader(f_in)
+        for row in reader:
+            key = as_int(row.get(id_col, ""))
+            if key is None:
+                continue
+            if key in seen:
+                duplicates += 1
+            else:
+                seen.add(key)
+    return duplicates
 
 
 def _log_fact_shots_export_report(
     fact_shots_csv_path: Path,
+    dims_dir: Path,
     final_artifact_path: Path,
     output_format: str,
 ) -> None:
-    column_count, csv_size = _validate_fact_shots_csv(fact_shots_csv_path)
+    column_count, csv_size, null_counts, row_count = _validate_fact_shots_csv(fact_shots_csv_path)
     before_column_count = column_count + len(REMOVED_FACT_SHOT_COLUMNS)
     final_size = final_artifact_path.stat().st_size if final_artifact_path.exists() else csv_size
+    denom = max(1, row_count)
+    null_rates = ", ".join(
+        f"{col}={null_counts[col] / denom:.2%}" for col in ("shot_outcome_id", "body_part_id", "shot_type_id")
+    )
+    dim_dup_outcome = _count_duplicate_ids(dims_dir / "dim_shot_outcome.csv", "shot_outcome_id")
+    dim_dup_body = _count_duplicate_ids(dims_dir / "dim_body_part.csv", "body_part_id")
+    dim_dup_type = _count_duplicate_ids(dims_dir / "dim_shot_type.csv", "shot_type_id")
+    if dim_dup_outcome > 0 or dim_dup_body > 0 or dim_dup_type > 0:
+        raise ValueError(
+            "Dimension duplicate keys detected: "
+            f"dim_shot_outcome={dim_dup_outcome}, dim_body_part={dim_dup_body}, dim_shot_type={dim_dup_type}"
+        )
     print(
         (
             "[fact_shots] validation PASS | "
             f"columns(before->after): {before_column_count} -> {column_count} | "
             f"csv_size={format_bytes(csv_size)} | "
-            f"{output_format}_size={format_bytes(final_size)}"
+            f"{output_format}_size={format_bytes(final_size)} | "
+            f"id_null_rates: {null_rates} | "
+            "dim_key_duplicates: dim_shot_outcome=0, dim_body_part=0, dim_shot_type=0"
         ),
         flush=True,
     )
@@ -1453,6 +1470,7 @@ def _build_star_schema_csv(
     fact_shots_csv_path = output_dir / "fact_shots.csv"
     _log_fact_shots_export_report(
         fact_shots_csv_path=fact_shots_csv_path,
+        dims_dir=output_dir,
         final_artifact_path=fact_shots_csv_path,
         output_format="csv",
     )
@@ -1491,6 +1509,7 @@ def build_star_schema(
         convert_csv_tables_to_parquet(temp_output_dir, output_dir, batch_size_rows=parquet_batch_size)
         _log_fact_shots_export_report(
             fact_shots_csv_path=temp_output_dir / "fact_shots.csv",
+            dims_dir=temp_output_dir,
             final_artifact_path=output_dir / "fact_shots.parquet",
             output_format="parquet",
         )
