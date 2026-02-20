@@ -2,10 +2,84 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
+import streamlit as st
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LINEUPS_DIR = REPO_ROOT / "data_raw" / "lineups"
+
+# Canonical "attack-up" coordinates for top-half team on a 120x100 pitch.
+# Home/away final placement is handled by explicit transform using `is_home`.
+POSITION_COORDS_ATTACK_UP: dict[str, tuple[float, float]] = {
+    "goalkeeper": (60.0, 92.0),
+    "left back": (24.0, 82.0),
+    "left center back": (42.0, 84.0),
+    "center back": (60.0, 84.0),
+    "right center back": (78.0, 84.0),
+    "right back": (96.0, 82.0),
+    "left wing back": (18.0, 78.0),
+    "right wing back": (102.0, 78.0),
+    "left defensive midfield": (38.0, 73.0),
+    "center defensive midfield": (60.0, 72.0),
+    "right defensive midfield": (82.0, 73.0),
+    "left center midfield": (44.0, 67.0),
+    "center midfield": (60.0, 66.0),
+    "right center midfield": (76.0, 67.0),
+    "left midfield": (22.0, 64.0),
+    "right midfield": (98.0, 64.0),
+    "left wing": (20.0, 60.0),
+    "right wing": (100.0, 60.0),
+    "left attacking midfield": (38.0, 61.0),
+    "center attacking midfield": (60.0, 60.0),
+    "right attacking midfield": (82.0, 61.0),
+    "left center forward": (48.0, 56.0),
+    "center forward": (60.0, 55.0),
+    "right center forward": (72.0, 56.0),
+    "secondary striker": (60.0, 58.0),
+}
+
+
+def _lineups_dir() -> Path:
+    return LINEUPS_DIR
+
+
+def _normalize_position_name(position_name: Any) -> str:
+    text = str(position_name or "").strip().lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+@st.cache_data(show_spinner=False)
+def _lineup_file_index(lineups_dir_str: str) -> dict[int, str]:
+    base = Path(lineups_dir_str)
+    if not base.exists():
+        return {}
+    index: dict[int, str] = {}
+    for path in base.glob("*.json"):
+        try:
+            match_id = int(path.stem)
+        except ValueError:
+            continue
+        index[match_id] = str(path)
+    return index
+
+
+@st.cache_data(show_spinner=False)
+def _load_lineup_file(match_id: int, lineups_dir_str: str) -> list[dict[str, Any]] | None:
+    index = _lineup_file_index(lineups_dir_str)
+    file_path = index.get(int(match_id))
+    if not file_path:
+        return None
+    try:
+        payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return None
 
 
 def _team_filter(
@@ -27,78 +101,23 @@ def _team_filter(
     return work
 
 
-def _first_non_empty(series: pd.Series) -> str | None:
-    for value in series.astype("string").fillna("").tolist():
-        text = str(value).strip()
-        if text:
-            return text
-    return None
-
-
-def _parse_json_like(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (list, dict)):
-        return value
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
-
-
-def _extract_tactics_lineup(starting_row: pd.Series) -> list[dict[str, Any]]:
-    for col in ("tactics_lineup", "lineup"):
-        if col not in starting_row.index:
-            continue
-        parsed = _parse_json_like(starting_row.get(col))
-        if isinstance(parsed, list):
-            return [item for item in parsed if isinstance(item, dict)]
-        if isinstance(parsed, dict) and isinstance(parsed.get("lineup"), list):
-            return [item for item in parsed["lineup"] if isinstance(item, dict)]
-    return []
-
-
-def _shape_xi_from_tactics(lineup_items: list[dict[str, Any]]) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
-    for idx, item in enumerate(lineup_items):
-        player_block = item.get("player") if isinstance(item.get("player"), dict) else {}
-        position_block = item.get("position") if isinstance(item.get("position"), dict) else {}
-        rows.append(
-            {
-                "player_id": player_block.get("id"),
-                "player_name": player_block.get("name"),
-                "jersey_number": item.get("jersey_number"),
-                "position_id": position_block.get("id"),
-                "position_name": position_block.get("name"),
-                "sort_order": idx + 1,
-                "source": "starting_xi_event",
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def _canonical_xi_from_events(team_events: pd.DataFrame) -> pd.DataFrame:
     if team_events.empty:
-        return pd.DataFrame(columns=["player_id", "player_name", "jersey_number", "position_id", "position_name", "sort_order", "source"])
+        return pd.DataFrame(
+            columns=["player_id", "player_name", "jersey_number", "position_id", "position_name", "sort_order", "source"]
+        )
 
     work = team_events.copy()
     if "type_name" in work.columns:
         work = work[work["type_name"].astype("string").str.strip().str.lower() != "starting xi"]
-
     if "player_name" in work.columns:
         work = work[work["player_name"].astype("string").str.strip() != ""]
     if "player_id" in work.columns:
         work["player_id"] = pd.to_numeric(work["player_id"], errors="coerce")
 
-    for col in ("minute", "second", "period", "event_index"):
+    for col in ("period", "minute", "second", "event_index"):
         if col in work.columns:
             work[col] = pd.to_numeric(work[col], errors="coerce")
-
     sort_cols = [col for col in ("period", "minute", "second", "event_index") if col in work.columns]
     if sort_cols:
         work = work.sort_values(sort_cols, kind="mergesort")
@@ -106,16 +125,16 @@ def _canonical_xi_from_events(team_events: pd.DataFrame) -> pd.DataFrame:
     out_rows: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
     seen_names: set[str] = set()
-
     for _, row in work.iterrows():
         pid = row.get("player_id")
         pname = str(row.get("player_name") or "").strip()
         if pd.notna(pid):
-            pid_i = int(pid)
-            if pid_i in seen_ids:
+            pid_int = int(pid)
+            if pid_int in seen_ids:
                 continue
         elif not pname:
             continue
+
         name_key = pname.lower()
         if name_key and name_key in seen_names:
             continue
@@ -127,7 +146,7 @@ def _canonical_xi_from_events(team_events: pd.DataFrame) -> pd.DataFrame:
                 "position_id": row.get("position_id"),
                 "position_name": row.get("position_name"),
                 "sort_order": len(out_rows) + 1,
-                "source": "events_first_appearance",
+                "source": "events_fallback",
             }
         )
         if pd.notna(pid):
@@ -138,6 +157,73 @@ def _canonical_xi_from_events(team_events: pd.DataFrame) -> pd.DataFrame:
             break
 
     return pd.DataFrame(out_rows)
+
+
+def _pick_team_entry(
+    lineup_doc: list[dict[str, Any]],
+    team_id: int | None,
+    team_name: str | None,
+) -> dict[str, Any] | None:
+    if not lineup_doc:
+        return None
+    if team_id is not None:
+        for entry in lineup_doc:
+            if int(entry.get("team_id", -1)) == int(team_id):
+                return entry
+    if team_name:
+        needle = team_name.strip().lower()
+        for entry in lineup_doc:
+            if str(entry.get("team_name") or "").strip().lower() == needle:
+                return entry
+    return lineup_doc[0] if len(lineup_doc) == 1 else None
+
+
+def _clock_to_seconds(value: Any) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 10**9
+    parts = text.split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    except ValueError:
+        return 10**9
+    return 10**9
+
+
+def _pick_primary_position(positions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not positions:
+        return None
+    valid = [seg for seg in positions if isinstance(seg, dict)]
+    if not valid:
+        return None
+
+    starters_0000 = [
+        seg
+        for seg in valid
+        if str(seg.get("start_reason") or "").strip().lower() == "starting xi"
+        and str(seg.get("from") or "").strip() == "00:00"
+    ]
+    if starters_0000:
+        return starters_0000[0]
+
+    starters = [seg for seg in valid if str(seg.get("start_reason") or "").strip().lower() == "starting xi"]
+    if starters:
+        return sorted(starters, key=lambda seg: _clock_to_seconds(seg.get("from")))[0]
+
+    return sorted(valid, key=lambda seg: _clock_to_seconds(seg.get("from")))[0]
+
+
+def _is_starter(player: dict[str, Any]) -> bool:
+    positions = [seg for seg in player.get("positions", []) if isinstance(seg, dict)]
+    if not positions:
+        return False
+    if any(str(seg.get("start_reason") or "").strip().lower() == "starting xi" for seg in positions):
+        return True
+    earliest = min(positions, key=lambda seg: _clock_to_seconds(seg.get("from")))
+    return str(earliest.get("from") or "").strip() == "00:00"
 
 
 def _formation_from_text(value: Any) -> str | None:
@@ -153,58 +239,39 @@ def _formation_from_text(value: Any) -> str | None:
     return None
 
 
-def _position_bucket(position_name: str) -> str:
-    p = position_name.lower()
-    if "goalkeeper" in p or p == "gk":
-        return "gk"
-    if any(token in p for token in ("back", "defender", "center back", "left back", "right back", "wing back", "cb", "lb", "rb")):
-        return "def"
-    if any(token in p for token in ("forward", "striker", "wing", "attacker", "center forward", "cf", "st")):
-        return "fwd"
-    if any(token in p for token in ("midfield", "midfielder", "dm", "cm", "am")):
-        return "mid"
-    return "mid"
-
-
-def _infer_formation_from_xi(xi_df: pd.DataFrame) -> str | None:
-    if xi_df.empty:
-        return None
-    labels = xi_df.get("position_name", pd.Series("", index=xi_df.index)).astype("string").fillna("")
-    buckets = labels.apply(_position_bucket)
-    gk = int((buckets == "gk").sum())
-    defenders = int((buckets == "def").sum())
-    mids = int((buckets == "mid").sum())
-    fwds = int((buckets == "fwd").sum())
-    outfield = defenders + mids + fwds
-    if outfield == 0:
-        return None
-    if gk == 0 and outfield >= 11:
-        outfield = 10
-    if outfield != 10:
-        return None
-    return f"{defenders}-{mids}-{fwds}"
-
-
 def get_starting_xi(
     fact_events: pd.DataFrame,
     match_id: int,
     team_id: int | None = None,
     team_name: str | None = None,
 ) -> pd.DataFrame:
-    team_events = _team_filter(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
-    if team_events.empty:
-        return pd.DataFrame(columns=["player_id", "player_name", "jersey_number", "position_id", "position_name", "sort_order", "source"])
-
-    starts = team_events[team_events.get("type_name", pd.Series("", index=team_events.index)).astype("string").str.strip().str.lower() == "starting xi"]
-    if not starts.empty:
-        lineup_items = _extract_tactics_lineup(starts.iloc[0])
-        if lineup_items:
-            xi = _shape_xi_from_tactics(lineup_items)
+    lineup_doc = _load_lineup_file(int(match_id), str(_lineups_dir()))
+    if lineup_doc is not None:
+        team_entry = _pick_team_entry(lineup_doc, team_id=team_id, team_name=team_name)
+        if team_entry is not None:
+            starters = [p for p in team_entry.get("lineup", []) if isinstance(p, dict) and _is_starter(p)]
+            if not starters:
+                starters = [p for p in team_entry.get("lineup", []) if isinstance(p, dict)][:11]
+            rows: list[dict[str, Any]] = []
+            for idx, player in enumerate(starters):
+                seg = _pick_primary_position(player.get("positions", []))
+                rows.append(
+                    {
+                        "player_id": player.get("player_id"),
+                        "player_name": player.get("player_name"),
+                        "jersey_number": player.get("jersey_number"),
+                        "position_id": seg.get("position_id") if isinstance(seg, dict) else pd.NA,
+                        "position_name": seg.get("position") if isinstance(seg, dict) else pd.NA,
+                        "sort_order": idx + 1,
+                        "source": "data_raw_lineups",
+                    }
+                )
+            xi = pd.DataFrame(rows).drop_duplicates(subset=["player_id", "player_name"]).head(11).reset_index(drop=True)
             if not xi.empty:
-                return xi.drop_duplicates(subset=["player_id", "player_name"]).head(11).reset_index(drop=True)
+                return xi
 
-    xi = _canonical_xi_from_events(team_events)
-    return xi.drop_duplicates(subset=["player_id", "player_name"]).head(11).reset_index(drop=True)
+    team_events = _team_filter(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
+    return _canonical_xi_from_events(team_events).head(11).reset_index(drop=True)
 
 
 def get_formation(
@@ -217,41 +284,56 @@ def get_formation(
     if team_events.empty:
         return None
 
-    starts = team_events[team_events.get("type_name", pd.Series("", index=team_events.index)).astype("string").str.strip().str.lower() == "starting xi"]
-    if not starts.empty:
-        row = starts.iloc[0]
-        for col in ("tactics_formation", "formation", "team_formation", "starting_formation"):
-            if col in starts.columns:
-                parsed = _formation_from_text(row.get(col))
-                if parsed:
-                    return parsed
-        for col in ("tactics", "lineup"):
-            parsed = _parse_json_like(row.get(col))
-            if isinstance(parsed, dict):
-                parsed_form = _formation_from_text(parsed.get("formation"))
-                if parsed_form:
-                    return parsed_form
-
-    xi = get_starting_xi(team_events, match_id=match_id, team_id=team_id, team_name=team_name)
-    inferred = _infer_formation_from_xi(xi)
-    if inferred:
-        return f"{inferred} (approx.)"
+    starts = team_events[
+        team_events.get("type_name", pd.Series("", index=team_events.index))
+        .astype("string")
+        .str.strip()
+        .str.lower()
+        == "starting xi"
+    ]
+    if starts.empty:
+        return None
+    row = starts.iloc[0]
+    for col in ("tactics_formation", "formation", "team_formation", "starting_formation"):
+        if col in starts.columns:
+            parsed = _formation_from_text(row.get(col))
+            if parsed:
+                return parsed
     return None
 
 
-def _parse_formation_lines(formation: str | None) -> list[int]:
-    if not formation:
-        return [4, 3, 3]
-    digits = [int(d) for d in re.findall(r"\d+", formation)]
-    if not digits:
-        return [4, 3, 3]
-    if sum(digits) == 10:
-        return digits
-    if len(digits) == 1 and digits[0] >= 3:
-        raw = [int(ch) for ch in str(digits[0])]
-        if sum(raw) == 10:
-            return raw
-    return [4, 3, 3]
+def _coords_for_position(position_name: Any) -> tuple[float, float] | None:
+    key = _normalize_position_name(position_name)
+    return POSITION_COORDS_ATTACK_UP.get(key)
+
+
+def _transform_half_coords(x: float, y_attack_up: float, is_home: bool) -> tuple[float, float]:
+    # Home defends bottom goal and attacks upward; away is mirrored to defend top goal.
+    if is_home:
+        y = 100.0 - y_attack_up
+    else:
+        y = y_attack_up
+    return x, y
+
+
+def get_unmapped_position_names(
+    match_id: int,
+    fact_events: pd.DataFrame | None = None,
+    team_id: int | None = None,
+    team_name: str | None = None,
+) -> list[str]:
+    events = fact_events if fact_events is not None else pd.DataFrame()
+    xi = get_starting_xi(events, match_id=match_id, team_id=team_id, team_name=team_name)
+    if xi.empty or "position_name" not in xi.columns:
+        return []
+    unmapped: set[str] = set()
+    for value in xi["position_name"].astype("string").fillna("").tolist():
+        name = str(value).strip()
+        if not name:
+            continue
+        if _coords_for_position(name) is None:
+            unmapped.add(name)
+    return sorted(unmapped)
 
 
 def get_starting_positions(
@@ -260,75 +342,41 @@ def get_starting_positions(
     team_id: int | None = None,
     team_name: str | None = None,
     formation: str | None = None,
+    half: str = "top",
+    is_home: bool | None = None,
 ) -> list[dict[str, Any]]:
+    del formation  # positions are driven by lineup JSON positions, not synthetic formation lines.
     xi = get_starting_xi(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
     if xi.empty:
         return []
 
-    lines = _parse_formation_lines(formation)
-    remaining = xi.copy()
-    remaining["position_name"] = remaining.get("position_name", pd.Series("", index=remaining.index)).astype("string").fillna("")
+    rows: list[dict[str, Any]] = []
+    for _, row in xi.iterrows():
+        mapped = _coords_for_position(row.get("position_name"))
+        if mapped is None:
+            x, y_attack_up = 60.0, 66.0
+            approximate = True
+        else:
+            x, y_attack_up = mapped
+            approximate = False
 
-    gk_mask = remaining["position_name"].str.lower().str.contains("goalkeeper|\\bgk\\b", regex=True, na=False)
-    if gk_mask.any():
-        gk_row = remaining[gk_mask].iloc[0]
-        outfield = remaining.drop(index=gk_row.name).reset_index(drop=True)
-    else:
-        gk_row = remaining.iloc[0]
-        outfield = remaining.iloc[1:].reset_index(drop=True)
+        home_flag = bool(is_home) if is_home is not None else (half.strip().lower() == "bottom")
+        x, y = _transform_half_coords(float(x), float(y_attack_up), is_home=home_flag)
 
-    needed = sum(lines)
-    if len(outfield) < needed:
-        pad = needed - len(outfield)
-        fillers = pd.DataFrame(
-            [
-                {
-                    "player_id": pd.NA,
-                    "player_name": f"Unknown {i + 1}",
-                    "jersey_number": pd.NA,
-                    "position_id": pd.NA,
-                    "position_name": "",
-                    "sort_order": 100 + i,
-                    "source": "fallback_padding",
-                }
-                for i in range(pad)
-            ]
+        jersey = row.get("jersey_number")
+        jersey_text = str(int(jersey)) if pd.notna(jersey) and str(jersey).strip() else "?"
+        rows.append(
+            {
+                "player_id": row.get("player_id"),
+                "player_name": str(row.get("player_name") or "Unknown"),
+                "jersey_number": row.get("jersey_number"),
+                "jersey_text": jersey_text,
+                "position_id": row.get("position_id"),
+                "position_name": row.get("position_name"),
+                "x": float(x),
+                "y": float(y),
+                "approximate": approximate,
+            }
         )
-        outfield = pd.concat([outfield, fillers], ignore_index=True)
-    outfield = outfield.head(needed)
 
-    x_rows: list[dict[str, Any]] = [
-        {
-            "player_id": gk_row.get("player_id"),
-            "player_name": str(gk_row.get("player_name") or "Goalkeeper"),
-            "jersey_number": gk_row.get("jersey_number"),
-            "position_name": gk_row.get("position_name"),
-            "x": 8.0,
-            "y": 40.0,
-            "approximate": True,
-        }
-    ]
-
-    x_slots = np.linspace(26, 102, num=len(lines)).tolist()
-    idx = 0
-    for line_idx, count in enumerate(lines):
-        if count <= 0:
-            continue
-        y_slots = np.linspace(14, 66, num=count).tolist()
-        for y in y_slots:
-            if idx >= len(outfield):
-                break
-            row = outfield.iloc[idx]
-            idx += 1
-            x_rows.append(
-                {
-                    "player_id": row.get("player_id"),
-                    "player_name": str(row.get("player_name") or f"Player {idx}"),
-                    "jersey_number": row.get("jersey_number"),
-                    "position_name": row.get("position_name"),
-                    "x": float(x_slots[line_idx]),
-                    "y": float(y),
-                    "approximate": True,
-                }
-            )
-    return x_rows[:11]
+    return rows

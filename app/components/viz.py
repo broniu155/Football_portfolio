@@ -210,3 +210,111 @@ def draw_formation_pitch(
     fig.update_xaxes(range=[-2, 122], showgrid=False, zeroline=False, visible=False)
     fig.update_yaxes(range=[82, -2], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1)
     return fig
+
+
+def _lineup_pitch_shapes(line_color: str = "#6c8f78") -> list[dict]:
+    # 120x100 pitch for split-half lineup view.
+    return [
+        dict(type="rect", x0=0, y0=0, x1=120, y1=100, line=dict(color=line_color, width=2)),
+        dict(type="line", x0=0, y0=50, x1=120, y1=50, line=dict(color=line_color, width=2)),
+        dict(type="circle", x0=50, y0=40, x1=70, y1=60, line=dict(color=line_color, width=2)),
+        dict(type="circle", x0=59.3, y0=49.3, x1=60.7, y1=50.7, fillcolor=line_color, line=dict(color=line_color)),
+        # Bottom goal structures
+        dict(type="rect", x0=18, y0=0, x1=102, y1=18, line=dict(color=line_color, width=2)),
+        dict(type="rect", x0=50, y0=0, x1=70, y1=6, line=dict(color=line_color, width=2)),
+        dict(type="circle", x0=59.3, y0=11.3, x1=60.7, y1=12.7, fillcolor=line_color, line=dict(color=line_color)),
+        dict(type="rect", x0=55, y0=-2, x1=65, y1=0, line=dict(color=line_color, width=2)),
+        # Top goal structures
+        dict(type="rect", x0=18, y0=82, x1=102, y1=100, line=dict(color=line_color, width=2)),
+        dict(type="rect", x0=50, y0=94, x1=70, y1=100, line=dict(color=line_color, width=2)),
+        dict(type="circle", x0=59.3, y0=87.3, x1=60.7, y1=88.7, fillcolor=line_color, line=dict(color=line_color)),
+        dict(type="rect", x0=55, y0=100, x1=65, y1=102, line=dict(color=line_color, width=2)),
+    ]
+
+
+def _lineup_df(positions: list[dict[str, object]]) -> pd.DataFrame:
+    df = pd.DataFrame(positions)
+    if df.empty:
+        return df
+    df["x"] = pd.to_numeric(df.get("x"), errors="coerce")
+    df["y"] = pd.to_numeric(df.get("y"), errors="coerce")
+    df = df.dropna(subset=["x", "y"]).copy()
+    if df.empty:
+        return df
+    df["player_name"] = df.get("player_name", pd.Series("-", index=df.index)).astype("string").fillna("-")
+    df["position_name"] = df.get("position_name", pd.Series("", index=df.index)).astype("string").fillna("")
+    df["jersey_text"] = df.get("jersey_text", pd.Series("?", index=df.index)).astype("string").fillna("?")
+    df["name_short"] = df["player_name"].str.slice(0, 18)
+    return df
+
+
+def draw_split_lineup_pitch(
+    home_positions: list[dict[str, object]],
+    away_positions: list[dict[str, object]],
+    subtitle: str | None = None,
+    home_color: str = "#6aa6ff",
+    away_color: str = "#42d392",
+) -> go.Figure:
+    fig = go.Figure()
+    home_df = _lineup_df(home_positions)
+    away_df = _lineup_df(away_positions)
+
+    if home_df.empty and away_df.empty:
+        fig.update_layout(
+            paper_bgcolor="#0b1220",
+            plot_bgcolor="#0f1a2d",
+            font=dict(color="#e7edf7"),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            height=620,
+        )
+        return fig
+
+    def _add_team(df: pd.DataFrame, color: str, name_offset: float) -> None:
+        if df.empty:
+            return
+        fig.add_trace(
+            go.Scatter(
+                x=df["x"],
+                y=df["y"],
+                mode="markers+text",
+                text=df["jersey_text"],
+                textposition="middle center",
+                textfont=dict(color="#0b1220", size=11),
+                marker=dict(size=24, color=color, line=dict(color="#e7edf7", width=1.1)),
+                customdata=df[["player_name", "position_name", "jersey_text"]],
+                hovertemplate=(
+                    "Player: %{customdata[0]}<br>"
+                    "Position: %{customdata[1]}<br>"
+                    "Number: %{customdata[2]}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["x"],
+                y=df["y"] + name_offset,
+                mode="text",
+                text=df["name_short"],
+                textfont=dict(color="#e7edf7", size=10),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    _add_team(home_df, color=home_color, name_offset=-3.2)
+    _add_team(away_df, color=away_color, name_offset=3.2)
+
+    fig.update_layout(
+        title=f"Starting XI Layout<br><sup>{subtitle}</sup>" if subtitle else "Starting XI Layout",
+        paper_bgcolor="#0b1220",
+        plot_bgcolor="#0f1a2d",
+        font=dict(color="#e7edf7"),
+        margin=dict(l=10, r=10, t=80, b=22),
+        height=620,
+        shapes=_lineup_pitch_shapes(),
+    )
+    fig.update_xaxes(range=[-2, 122], showgrid=False, zeroline=False, visible=False)
+    fig.update_yaxes(range=[-2, 102], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1)
+    return fig

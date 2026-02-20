@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.components.data import get_events, get_lineup_events, get_shots, load_dimensions
 from app.components.filters import sidebar_filters_cascading
-from app.components.lineups import get_formation, get_starting_positions, get_starting_xi
+from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
 from app.components.match_stats import (
     compute_match_stats,
     render_match_score_header,
@@ -20,7 +20,7 @@ from app.components.match_stats import (
 )
 from app.components.model_views import get_shots_view
 from app.components.ui import setup_page
-from app.components.viz import draw_formation_pitch, draw_pitch_figure
+from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
 
 setup_page(page_title="Match Report", page_icon=":bar_chart:")
 
@@ -110,6 +110,7 @@ home_positions = get_starting_positions(
     team_id=home_team_id,
     team_name=home_team_name,
     formation=home_formation,
+    is_home=True,
 )
 away_positions = get_starting_positions(
     lineup_events,
@@ -117,23 +118,46 @@ away_positions = get_starting_positions(
     team_id=away_team_id,
     team_name=away_team_name,
     formation=away_formation,
+    is_home=False,
 )
+hdr_home, hdr_away = st.columns(2)
+with hdr_home:
+    st.markdown(f"**{home_team_name} — {home_formation or 'Formation unknown'}**")
+with hdr_away:
+    st.markdown(f"**{away_team_name} — {away_formation or 'Formation unknown'}**")
+st.plotly_chart(
+    draw_split_lineup_pitch(
+        home_positions=home_positions,
+        away_positions=away_positions,
+        subtitle=f"{home_team_name} vs {away_team_name}",
+    ),
+    use_container_width=True,
+)
+
+unmapped = sorted(
+    set(get_unmapped_position_names(int(match_id), lineup_events, team_id=home_team_id))
+    | set(get_unmapped_position_names(int(match_id), lineup_events, team_id=away_team_id))
+)
+if unmapped:
+    st.warning("Unmapped positions placed in fallback midfield zone: " + ", ".join(unmapped))
+
+if bool(st.session_state.get("debug_lineup")):
+    home_gk = next((p for p in home_positions if str(p.get("position_name") or "").strip().lower() == "goalkeeper"), None)
+    away_gk = next((p for p in away_positions if str(p.get("position_name") or "").strip().lower() == "goalkeeper"), None)
+    st.caption(
+        "Lineup debug | "
+        f"Home GK: ({home_gk.get('x') if home_gk else 'n/a'}, {home_gk.get('y') if home_gk else 'n/a'}) | "
+        f"Away GK: ({away_gk.get('x') if away_gk else 'n/a'}, {away_gk.get('y') if away_gk else 'n/a'})"
+    )
+
+if "source" in home_xi.columns and not home_xi.empty and not (home_xi["source"] == "data_raw_lineups").any():
+    st.info("Home lineup JSON not found; showing fallback lineup from event participation.")
+if "source" in away_xi.columns and not away_xi.empty and not (away_xi["source"] == "data_raw_lineups").any():
+    st.info("Away lineup JSON not found; showing fallback lineup from event participation.")
 
 col_home, col_away = st.columns(2)
 with col_home:
-    st.markdown(
-        f"**{home_team_name} • {home_formation or 'Formation unavailable'}**"
-    )
-    st.plotly_chart(
-        draw_formation_pitch(
-            positions=home_positions,
-            title=f"{home_team_name} XI",
-            subtitle="Approximate layout when explicit lineup coordinates are unavailable.",
-            mirror=False,
-            marker_color="#6aa6ff",
-        ),
-        use_container_width=True,
-    )
+    st.markdown(f"**{home_team_name} • {home_formation or 'Formation unknown'}**")
     if home_xi.empty:
         st.warning("Starting XI unavailable for this team/match.")
     else:
@@ -142,23 +166,13 @@ with col_home:
         if "player_name" in home_xi.columns and home_xi["player_name"].astype("string").str.lower().duplicated().any():
             st.warning("Starting XI contains duplicate player names.")
         home_tbl = home_xi.copy()
+        if "jersey_number" in home_tbl.columns:
+            home_tbl["jersey_number"] = home_tbl["jersey_number"].fillna("?")
         display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in home_tbl.columns]
         st.dataframe(home_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
 
 with col_away:
-    st.markdown(
-        f"**{away_team_name} • {away_formation or 'Formation unavailable'}**"
-    )
-    st.plotly_chart(
-        draw_formation_pitch(
-            positions=away_positions,
-            title=f"{away_team_name} XI",
-            subtitle="Approximate layout when explicit lineup coordinates are unavailable.",
-            mirror=True,
-            marker_color="#42d392",
-        ),
-        use_container_width=True,
-    )
+    st.markdown(f"**{away_team_name} • {away_formation or 'Formation unknown'}**")
     if away_xi.empty:
         st.warning("Starting XI unavailable for this team/match.")
     else:
@@ -167,6 +181,8 @@ with col_away:
         if "player_name" in away_xi.columns and away_xi["player_name"].astype("string").str.lower().duplicated().any():
             st.warning("Starting XI contains duplicate player names.")
         away_tbl = away_xi.copy()
+        if "jersey_number" in away_tbl.columns:
+            away_tbl["jersey_number"] = away_tbl["jersey_number"].fillna("?")
         display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in away_tbl.columns]
         st.dataframe(away_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
 
