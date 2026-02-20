@@ -9,8 +9,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from app.components.data import get_events, get_shots, load_dimensions
+from app.components.data import get_events, get_lineup_events, get_shots, load_dimensions
 from app.components.filters import sidebar_filters_cascading
+from app.components.lineups import get_formation, get_starting_positions, get_starting_xi
 from app.components.match_stats import (
     compute_match_stats,
     render_match_score_header,
@@ -19,7 +20,7 @@ from app.components.match_stats import (
 )
 from app.components.model_views import get_shots_view
 from app.components.ui import setup_page
-from app.components.viz import draw_pitch_figure
+from app.components.viz import draw_formation_pitch, draw_pitch_figure
 
 setup_page(page_title="Match Report", page_icon=":bar_chart:")
 
@@ -48,6 +49,7 @@ st.caption(selection["match_label"] or "")
 
 with st.spinner("Loading match context..."):
     match_events = get_events(match_id=match_id)
+    lineup_events = get_lineup_events(match_id=match_id)
     match_shots = get_shots(match_id=match_id)
     context_shots = get_shots(match_id=match_id, team_id=team_id, player_id=player_id)
 
@@ -86,6 +88,87 @@ except AssertionError as err:
 
 st.markdown('<div class="section-title">Match Stats</div>', unsafe_allow_html=True)
 render_match_stats_panel(stats_payload, filtered=apply_stats_filters)
+
+st.markdown('<div class="section-title">Starting XI & Formation</div>', unsafe_allow_html=True)
+match_row = (
+    dim_match[pd.to_numeric(dim_match["match_id"], errors="coerce") == int(match_id)].iloc[0]
+    if "match_id" in dim_match.columns and not dim_match.empty
+    else pd.Series(dtype="object")
+)
+home_team_id = int(match_row["home_team_id"]) if "home_team_id" in match_row and pd.notna(match_row["home_team_id"]) else None
+away_team_id = int(match_row["away_team_id"]) if "away_team_id" in match_row and pd.notna(match_row["away_team_id"]) else None
+home_team_name = str(match_row.get("home_team_name") or "Home")
+away_team_name = str(match_row.get("away_team_name") or "Away")
+
+home_xi = get_starting_xi(lineup_events, match_id=int(match_id), team_id=home_team_id, team_name=home_team_name)
+away_xi = get_starting_xi(lineup_events, match_id=int(match_id), team_id=away_team_id, team_name=away_team_name)
+home_formation = get_formation(lineup_events, match_id=int(match_id), team_id=home_team_id, team_name=home_team_name)
+away_formation = get_formation(lineup_events, match_id=int(match_id), team_id=away_team_id, team_name=away_team_name)
+home_positions = get_starting_positions(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=home_team_id,
+    team_name=home_team_name,
+    formation=home_formation,
+)
+away_positions = get_starting_positions(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=away_team_id,
+    team_name=away_team_name,
+    formation=away_formation,
+)
+
+col_home, col_away = st.columns(2)
+with col_home:
+    st.markdown(
+        f"**{home_team_name} • {home_formation or 'Formation unavailable'}**"
+    )
+    st.plotly_chart(
+        draw_formation_pitch(
+            positions=home_positions,
+            title=f"{home_team_name} XI",
+            subtitle="Approximate layout when explicit lineup coordinates are unavailable.",
+            mirror=False,
+            marker_color="#6aa6ff",
+        ),
+        use_container_width=True,
+    )
+    if home_xi.empty:
+        st.warning("Starting XI unavailable for this team/match.")
+    else:
+        if len(home_xi) != 11:
+            st.warning(f"Starting XI is incomplete: {len(home_xi)} players found.")
+        if "player_name" in home_xi.columns and home_xi["player_name"].astype("string").str.lower().duplicated().any():
+            st.warning("Starting XI contains duplicate player names.")
+        home_tbl = home_xi.copy()
+        display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in home_tbl.columns]
+        st.dataframe(home_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
+
+with col_away:
+    st.markdown(
+        f"**{away_team_name} • {away_formation or 'Formation unavailable'}**"
+    )
+    st.plotly_chart(
+        draw_formation_pitch(
+            positions=away_positions,
+            title=f"{away_team_name} XI",
+            subtitle="Approximate layout when explicit lineup coordinates are unavailable.",
+            mirror=True,
+            marker_color="#42d392",
+        ),
+        use_container_width=True,
+    )
+    if away_xi.empty:
+        st.warning("Starting XI unavailable for this team/match.")
+    else:
+        if len(away_xi) != 11:
+            st.warning(f"Starting XI is incomplete: {len(away_xi)} players found.")
+        if "player_name" in away_xi.columns and away_xi["player_name"].astype("string").str.lower().duplicated().any():
+            st.warning("Starting XI contains duplicate player names.")
+        away_tbl = away_xi.copy()
+        display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in away_tbl.columns]
+        st.dataframe(away_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
 
 st.markdown('<div class="section-title">Context</div>', unsafe_allow_html=True)
 chips = [selection["competition_name"], selection["season_name"], selection["team_name"], selection["player_name"]]

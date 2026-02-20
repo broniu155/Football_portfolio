@@ -128,3 +128,85 @@ def draw_pitch_figure(shots_df: pd.DataFrame, title: str, subtitle: str | None =
     fig.update_xaxes(range=[-2, 122], showgrid=False, zeroline=False, visible=False)
     fig.update_yaxes(range=[82, -2], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1)
     return fig
+
+
+def draw_formation_pitch(
+    positions: list[dict[str, object]],
+    title: str,
+    subtitle: str | None = None,
+    mirror: bool = False,
+    marker_color: str = "#6aa6ff",
+) -> go.Figure:
+    fig = go.Figure()
+    if not positions:
+        fig.update_layout(
+            title=title,
+            paper_bgcolor="#0b1220",
+            plot_bgcolor="#0f1a2d",
+            font=dict(color="#e7edf7"),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            height=420,
+        )
+        return fig
+
+    rows = pd.DataFrame(positions)
+    rows["x"] = pd.to_numeric(rows.get("x"), errors="coerce")
+    rows["y"] = pd.to_numeric(rows.get("y"), errors="coerce")
+    rows = rows.dropna(subset=["x", "y"]).copy()
+    if rows.empty:
+        return fig
+
+    if mirror:
+        rows["x"] = 120 - rows["x"]
+        rows["y"] = 80 - rows["y"]
+
+    rows["jersey_number"] = rows.get("jersey_number", pd.Series(pd.NA, index=rows.index))
+    rows["player_name"] = rows.get("player_name", pd.Series("-", index=rows.index)).astype("string").fillna("-")
+    rows["position_name"] = rows.get("position_name", pd.Series("", index=rows.index)).astype("string").fillna("")
+    rows["marker_text"] = rows["jersey_number"].astype("string").fillna("").replace("<NA>", "")
+    rows["marker_text"] = rows["marker_text"].where(rows["marker_text"].str.strip() != "", rows["player_name"].str.slice(0, 2))
+
+    fig.add_trace(
+        go.Scatter(
+            x=rows["x"],
+            y=rows["y"],
+            mode="markers+text",
+            text=rows["marker_text"],
+            textposition="middle center",
+            textfont=dict(color="#0b1220", size=11),
+            marker=dict(size=22, color=marker_color, line=dict(color="#e7edf7", width=1)),
+            customdata=rows[["player_name", "position_name", "jersey_number"]],
+            hovertemplate=(
+                "Player: %{customdata[0]}<br>"
+                "Position: %{customdata[1]}<br>"
+                "Number: %{customdata[2]}<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=rows["x"],
+            y=rows["y"] + 4.2,
+            mode="text",
+            text=rows["player_name"],
+            textfont=dict(color="#e7edf7", size=10),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    full_title = f"{title}<br><sup>{subtitle}</sup>" if subtitle else title
+    fig.update_layout(
+        title=full_title,
+        paper_bgcolor="#0b1220",
+        plot_bgcolor="#0f1a2d",
+        font=dict(color="#e7edf7"),
+        margin=dict(l=10, r=10, t=84, b=28),
+        height=420,
+        shapes=_pitch_shapes(),
+    )
+    fig.update_xaxes(range=[-2, 122], showgrid=False, zeroline=False, visible=False)
+    fig.update_yaxes(range=[82, -2], showgrid=False, zeroline=False, visible=False, scaleanchor="x", scaleratio=1)
+    return fig
