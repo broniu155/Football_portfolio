@@ -1,0 +1,29 @@
+{
+  "competition": "Bundesliga",
+  "season": "2023/2024",
+  "n_matches": 10,
+  "match_ids": [
+    3895348,
+    3895340,
+    3895333,
+    3895320,
+    3895309,
+    3895302,
+    3895292,
+    3895286,
+    3895275,
+    3895266
+  ],
+  "row_counts": {
+    "dim_match": 10,
+    "dim_team": 11,
+    "dim_player": 177,
+    "fact_events": 38631,
+    "fact_shots": 282,
+    "dim_competition": 21,
+    "dim_season": 48,
+    "dim_shot_outcome": 8,
+    "dim_body_part": 4,
+    "dim_shot_type": 5
+  }
+}

@@ -30,5 +30,6 @@ venv/
 data_raw/
 data_processed/
 data_model/
+!data_model_sample/
+!data_model_sample/**
 outputs/
-

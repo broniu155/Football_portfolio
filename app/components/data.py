@@ -12,16 +12,26 @@ import pandas as pd
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SAMPLE_DIR = REPO_ROOT / "app" / "data" / "sample_star_schema"
+SAMPLE_DIR = REPO_ROOT / "data_model_sample"
+LEGACY_SAMPLE_DIR = REPO_ROOT / "app" / "data" / "sample_star_schema"
 LOCAL_MODEL_DIR = REPO_ROOT / "data_model"
 REMOTE_CACHE_DIR = REPO_ROOT / ".cache" / "remote_star_schema"
 VALID_MODES = ("sample", "remote", "local_generated")
 REQUIRED_TABLES = ("dim_match", "dim_team", "dim_player", "fact_events", "fact_shots")
 
 
+def _is_streamlit_cloud() -> bool:
+    cloud_markers = ("STREAMLIT_SHARING_MODE", "STREAMLIT_RUNTIME", "STREAMLIT_CLOUD")
+    return any(os.getenv(marker, "").strip() for marker in cloud_markers)
+
+
 def _default_mode() -> str:
-    env_mode = os.getenv("DATA_MODE", "sample").strip().lower()
-    return env_mode if env_mode in VALID_MODES else "sample"
+    env_mode = os.getenv("DATA_MODE", "").strip().lower()
+    if env_mode in VALID_MODES:
+        return env_mode
+    if _is_streamlit_cloud() and not LOCAL_MODEL_DIR.exists():
+        return "sample"
+    return "sample"
 
 
 def _select_mode() -> str:
@@ -34,7 +44,7 @@ def _select_mode() -> str:
         options=list(VALID_MODES),
         key="data_mode",
         help=(
-            "sample: built-in demo data, remote: download packaged dataset, "
+            "sample: curated repo sample in ./data_model_sample, remote: download packaged dataset, "
             "local_generated: use ./data_model generated from local raw JSON."
         ),
     )
@@ -63,7 +73,9 @@ def _prepare_remote_data(data_url: str) -> str:
 
 def _resolve_data_dir(active_mode: str) -> Path:
     if active_mode == "sample":
-        return SAMPLE_DIR
+        if SAMPLE_DIR.exists():
+            return SAMPLE_DIR
+        return LEGACY_SAMPLE_DIR
     if active_mode == "local_generated":
         return LOCAL_MODEL_DIR
 

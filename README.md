@@ -6,7 +6,7 @@ Multi-page football analytics app with a robust data-loading strategy for local 
 
 The app supports three modes controlled by `DATA_MODE` (and overridable from the Streamlit sidebar):
 
-- `sample` (default): uses committed files in `app/data/sample_star_schema/`
+- `sample` (default): uses committed curated sample files in `data_model_sample/`
 - `remote`: downloads a packaged dataset from `DATA_URL` on first run
 - `local_generated`: loads from `data_model/` generated from local `data_raw/`
 
@@ -71,19 +71,13 @@ while readable labels come from dimensions and are mapped in the app at load tim
 
 ## Sample Dataset
 
-Committed sample tables live in:
+Committed sample data lives in `data_model_sample/` and is safe to commit.
+Raw StatsBomb JSON and full local model outputs are not committed.
 
-- `app/data/sample_star_schema/dim_match.csv`
-- `app/data/sample_star_schema/dim_team.csv`
-- `app/data/sample_star_schema/dim_player.csv`
-- `app/data/sample_star_schema/fact_events.csv`
-- `app/data/sample_star_schema/fact_shots.csv`
-
-To regenerate sample data:
+To regenerate sample data locally (Bundesliga 2023/2024, default 10 matches):
 
 ```bash
-python scripts/make_sample_star_schema.py --format csv
-python scripts/make_sample_star_schema.py --format parquet
+python src/build_sample_data_model.py --n-matches 10
 ```
 
 ## Streamlit Community Cloud
