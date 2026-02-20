@@ -173,7 +173,7 @@ def plot_shot_map_xg(
     x_col: str = "location_x",
     y_col: str = "location_y",
     xg_col: str = "shot_statsbomb_xg",
-    outcome_col: str = "shot_outcome_name",
+    outcome_col: str = "shot_outcome",
 ) -> Path:
     """Plot shot locations with marker size scaled by xG and save as PNG.
 
@@ -273,4 +273,3 @@ def plot_defensive_action_map(
 
     ax.legend(loc="upper left", frameon=False, fontsize=8, ncol=2)
     return _save_figure(fig, output_path)
-

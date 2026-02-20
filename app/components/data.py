@@ -100,11 +100,12 @@ def _validate_required_tables(base_dir: Path) -> tuple[list[str], dict[str, Path
 
 
 @st.cache_data(show_spinner=False)
-def _read_table(path_str: str) -> pd.DataFrame:
+def _read_table(path_str: str, columns: tuple[str, ...] | None = None) -> pd.DataFrame:
     path = Path(path_str)
+    use_columns = list(columns) if columns else None
     if path.suffix.lower() == ".parquet":
-        return pd.read_parquet(path)
-    return pd.read_csv(path)
+        return pd.read_parquet(path, columns=use_columns)
+    return pd.read_csv(path, usecols=use_columns)
 
 
 def _normalize_lookup(table: pd.DataFrame, id_col: str, name_col: str) -> pd.DataFrame:
@@ -184,11 +185,16 @@ def _get_table_columns(path_str: str) -> list[str]:
     return conn.execute(f"SELECT * FROM {relation} LIMIT 0").df().columns.tolist()
 
 
+def _quote_identifier(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
 def _query_fact_rows(
     path: Path,
     match_id: int | None = None,
     team_id: int | None = None,
     player_id: int | None = None,
+    selected_columns: list[str] | None = None,
 ) -> pd.DataFrame:
     columns = set(_get_table_columns(str(path)))
     relation = _scan_relation_sql(path)
@@ -203,7 +209,9 @@ def _query_fact_rows(
     if player_id is not None and "player_id" in columns:
         predicates.append(f"TRY_CAST(player_id AS BIGINT) = {int(player_id)}")
 
-    sql = f"SELECT * FROM {relation}"
+    projected = [column for column in (selected_columns or []) if column in columns]
+    select_clause = ", ".join(_quote_identifier(column) for column in projected) if projected else "*"
+    sql = f"SELECT {select_clause} FROM {relation}"
     if predicates:
         sql += " WHERE " + " AND ".join(predicates)
 
@@ -235,22 +243,20 @@ def _dedupe_fact_shots(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _enrich_shot_outcome_name(shots: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
+def _enrich_fact_shots(shots: pd.DataFrame, base_dir: Path) -> pd.DataFrame:
     if shots.empty:
         return shots
 
     enriched = shots.copy()
-    if "shot_outcome_name" not in enriched.columns:
-        enriched["shot_outcome_name"] = pd.NA
-
-    if "shot_outcome" in enriched.columns:
-        # Preserve existing labels if available in older files.
-        enriched["shot_outcome_name"] = enriched["shot_outcome_name"].combine_first(enriched["shot_outcome"])
+    if "shot_outcome" not in enriched.columns:
+        enriched["shot_outcome"] = pd.NA
+    if "shot_outcome_name" in enriched.columns:
+        enriched["shot_outcome"] = enriched["shot_outcome"].combine_first(enriched["shot_outcome_name"])
 
     if "shot_outcome_id" in enriched.columns:
         dim_path = _resolve_table_file(base_dir, "dim_shot_outcome")
         if dim_path is not None:
-            dim_outcome = _read_table(str(dim_path))
+            dim_outcome = _read_table(str(dim_path), columns=("shot_outcome_id", "shot_outcome_name"))
             if {"shot_outcome_id", "shot_outcome_name"}.issubset(dim_outcome.columns):
                 lookup = dim_outcome[["shot_outcome_id", "shot_outcome_name"]].copy()
                 lookup["shot_outcome_id"] = pd.to_numeric(lookup["shot_outcome_id"], errors="coerce")
@@ -261,58 +267,53 @@ def _enrich_shot_outcome_name(shots: pd.DataFrame, base_dir: Path) -> pd.DataFra
                 enriched["shot_outcome_id"] = pd.to_numeric(enriched["shot_outcome_id"], errors="coerce")
                 enriched = enriched.merge(lookup, on="shot_outcome_id", how="left", suffixes=("", "_dim"))
                 if "shot_outcome_name_dim" in enriched.columns:
-                    enriched["shot_outcome_name"] = enriched["shot_outcome_name"].combine_first(
-                        enriched["shot_outcome_name_dim"]
-                    )
+                    enriched["shot_outcome"] = enriched["shot_outcome"].combine_first(enriched["shot_outcome_name_dim"])
                     enriched = enriched.drop(columns=["shot_outcome_name_dim"])
 
-    # Canonical naming for body-part id/name (legacy exports may use shot_body_part_*).
+    # Canonical naming for body part fields (legacy exports may use shot_body_part_*).
     if "body_part_id" not in enriched.columns and "shot_body_part_id" in enriched.columns:
         enriched["body_part_id"] = enriched["shot_body_part_id"]
-    if "body_part_name" not in enriched.columns and "shot_body_part_name" in enriched.columns:
-        enriched["body_part_name"] = enriched["shot_body_part_name"]
+    if "body_part" not in enriched.columns:
+        enriched["body_part"] = pd.NA
+    if "body_part_name" in enriched.columns:
+        enriched["body_part"] = enriched["body_part"].combine_first(enriched["body_part_name"])
+    if "shot_body_part_name" in enriched.columns:
+        enriched["body_part"] = enriched["body_part"].combine_first(enriched["shot_body_part_name"])
 
     # Merge shot type labels.
-    if "shot_type_name" not in enriched.columns:
-        enriched["shot_type_name"] = pd.NA
-    if "shot_type" in enriched.columns:
-        enriched["shot_type_name"] = enriched["shot_type_name"].combine_first(enriched["shot_type"])
+    if "shot_type" not in enriched.columns:
+        enriched["shot_type"] = pd.NA
+    if "shot_type_name" in enriched.columns:
+        enriched["shot_type"] = enriched["shot_type"].combine_first(enriched["shot_type_name"])
     if "shot_type_id" in enriched.columns:
         dim_shot_type_path = _resolve_table_file(base_dir, "dim_shot_type")
         if dim_shot_type_path is not None:
-            dim_shot_type = _read_table(str(dim_shot_type_path))
+            dim_shot_type = _read_table(str(dim_shot_type_path), columns=("shot_type_id", "shot_type_name"))
             if {"shot_type_id", "shot_type_name"}.issubset(dim_shot_type.columns):
                 lookup = _normalize_lookup(dim_shot_type, "shot_type_id", "shot_type_name")
                 if not lookup.empty:
                     enriched["shot_type_id"] = pd.to_numeric(enriched["shot_type_id"], errors="coerce")
                     enriched = enriched.merge(lookup, on="shot_type_id", how="left", suffixes=("", "_dim"))
                     if "shot_type_name_dim" in enriched.columns:
-                        enriched["shot_type_name"] = enriched["shot_type_name"].combine_first(enriched["shot_type_name_dim"])
+                        enriched["shot_type"] = enriched["shot_type"].combine_first(enriched["shot_type_name_dim"])
                         enriched = enriched.drop(columns=["shot_type_name_dim"])
 
     # Merge body part labels.
-    if "body_part_name" not in enriched.columns:
-        enriched["body_part_name"] = pd.NA
-    if "body_part" in enriched.columns:
-        enriched["body_part_name"] = enriched["body_part_name"].combine_first(enriched["body_part"])
     if "body_part_id" in enriched.columns:
         dim_body_part_path = _resolve_table_file(base_dir, "dim_body_part")
         if dim_body_part_path is not None:
-            dim_body_part = _read_table(str(dim_body_part_path))
+            dim_body_part = _read_table(str(dim_body_part_path), columns=("body_part_id", "body_part_name"))
             if {"body_part_id", "body_part_name"}.issubset(dim_body_part.columns):
                 lookup = _normalize_lookup(dim_body_part, "body_part_id", "body_part_name")
                 if not lookup.empty:
                     enriched["body_part_id"] = pd.to_numeric(enriched["body_part_id"], errors="coerce")
                     enriched = enriched.merge(lookup, on="body_part_id", how="left", suffixes=("", "_dim"))
                     if "body_part_name_dim" in enriched.columns:
-                        enriched["body_part_name"] = enriched["body_part_name"].combine_first(enriched["body_part_name_dim"])
+                        enriched["body_part"] = enriched["body_part"].combine_first(enriched["body_part_name_dim"])
                         enriched = enriched.drop(columns=["body_part_name_dim"])
-
-    if {"shot_outcome", "shot_outcome_name"}.issubset(enriched.columns):
-        lhs = enriched["shot_outcome"].fillna("").astype(str).str.strip().str.lower()
-        rhs = enriched["shot_outcome_name"].fillna("").astype(str).str.strip().str.lower()
-        if lhs.equals(rhs):
-            enriched = enriched.drop(columns=["shot_outcome"])
+    drop_if_present = [c for c in ("shot_outcome_name", "body_part_name") if c in enriched.columns]
+    if drop_if_present:
+        enriched = enriched.drop(columns=drop_if_present)
 
     return enriched
 
@@ -607,9 +608,45 @@ def get_players_for_match(match_id: int, team_id: int | None = None) -> pd.DataF
 
 def get_shots(match_id: int, team_id: int | None = None, player_id: int | None = None) -> pd.DataFrame:
     _, base_dir, table_paths = _resolve_active_table_paths(render_mode_selector=False)
-    shots = _query_fact_rows(table_paths["fact_shots"], match_id=match_id, team_id=team_id, player_id=player_id)
+    shot_projection = [
+        "event_id",
+        "match_id",
+        "team_id",
+        "team_name",
+        "player_id",
+        "player_name",
+        "minute",
+        "second",
+        "period",
+        "x",
+        "y",
+        "location_x",
+        "location_y",
+        "shot_end_location_x",
+        "shot_end_location_y",
+        "xg",
+        "shot_statsbomb_xg",
+        "shot_outcome_id",
+        "shot_outcome",
+        "shot_type_id",
+        "shot_type",
+        "shot_type_name",
+        "body_part_id",
+        "body_part",
+        "shot_body_part_id",
+        "shot_body_part_name",
+        "under_pressure",
+        "play_pattern_name",
+    ]
+    shots = _query_fact_rows(
+        table_paths["fact_shots"],
+        match_id=match_id,
+        team_id=team_id,
+        player_id=player_id,
+        selected_columns=shot_projection,
+    )
     shots = _dedupe_fact_shots(shots)
-    shots = _enrich_shot_outcome_name(shots, base_dir=base_dir)
+    shots = _enrich_fact_shots(shots, base_dir=base_dir)
     return shots
 
 

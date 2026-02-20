@@ -10,11 +10,13 @@ streamlit run app/Home.py
 ## Shot schema changes
 - `fact_shots` uses canonical outcome fields:
   - `shot_outcome_id`
-  - `shot_outcome_name`
-- Redundant legacy outcome text (`shot_outcome`) is not required for new exports.
+  - `shot_outcome` (canonical display label)
 - `fact_shots` now includes readable shot labels:
-  - `shot_type_id` + `shot_type_name`
-  - `body_part_id` + `body_part_name`
+  - `shot_type_id` + `shot_type`
+  - `body_part_id` + `body_part`
+- Redundant denormalized columns are removed from `fact_shots`:
+  - `shot_outcome_name`
+  - `body_part_name`
 - New tiny dimensions exported:
   - `dim_shot_type`
   - `dim_body_part`

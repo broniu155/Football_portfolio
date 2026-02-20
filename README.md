@@ -66,6 +66,9 @@ python src/export_star_schema.py --input-dir data_processed --output-dir data_mo
 
 Default format is `parquet`.
 
+`fact_shots` canonical display fields are `shot_outcome` and `body_part`; redundant
+`shot_outcome_name`/`body_part_name` are intentionally not exported.
+
 ## Sample Dataset
 
 Committed sample tables live in:

@@ -85,11 +85,11 @@ FACT_SHOT_BASE_COLUMNS = [
     "shot_end_location_y",
     "shot_statsbomb_xg",
     "shot_outcome_id",
-    "shot_outcome_name",
+    "shot_outcome",
     "shot_type_id",
-    "shot_type_name",
+    "shot_type",
     "body_part_id",
-    "body_part_name",
+    "body_part",
     "under_pressure",
 ]
 
@@ -141,6 +141,14 @@ DIM_MATCH_COLS = [
 TIME_KEY_COLUMN = "time_key"
 ZONE_ID_COLUMN = "zone_id"
 KNOWN_SHOT_TYPE_IDS = {16}
+REMOVED_FACT_SHOT_COLUMNS = ("shot_outcome_name", "body_part_name")
+FACT_SHOTS_DICT_ENCODE_COLUMNS = {
+    "shot_outcome",
+    "shot_type",
+    "body_part",
+    "team_name",
+    "player_name",
+}
 
 
 def warn(message: str) -> None:
@@ -188,6 +196,16 @@ def format_duration(seconds: float) -> str:
     if minutes > 0:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def format_bytes(size_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(max(0, size_bytes))
+    unit_idx = 0
+    while value >= 1024 and unit_idx < len(units) - 1:
+        value /= 1024.0
+        unit_idx += 1
+    return f"{value:.2f} {units[unit_idx]}"
 
 
 def estimate_total_rows(csv_path: Path) -> int | None:
@@ -1021,14 +1039,14 @@ def build_events_and_shots(
                         if col == TIME_KEY_COLUMN:
                             shot_row[col] = "" if time_key is None else time_key
                             continue
-                        if col == "shot_outcome_name":
-                            value = row.get("shot_outcome_name", "") or row.get("shot_outcome", "")
-                        elif col == "shot_type_name":
-                            value = row.get("shot_type_name", "") or row.get("shot_type", "")
+                        if col == "shot_outcome":
+                            value = row.get("shot_outcome", "") or row.get("shot_outcome_name", "")
+                        elif col == "shot_type":
+                            value = row.get("shot_type", "") or row.get("shot_type_name", "")
                         elif col == "body_part_id":
                             value = row.get("body_part_id", "") or row.get("shot_body_part_id", "")
-                        elif col == "body_part_name":
-                            value = row.get("body_part_name", "") or row.get("shot_body_part_name", "")
+                        elif col == "body_part":
+                            value = row.get("body_part", "") or row.get("body_part_name", "") or row.get("shot_body_part_name", "")
                         else:
                             value = row.get(col, "")
                         shot_row[col] = "" if is_nested_like(value) else value
@@ -1162,6 +1180,65 @@ def _read_csv_header(csv_path: Path) -> list[str]:
         return next(reader, [])
 
 
+def _validate_fact_shots_csv(csv_path: Path) -> tuple[int, int]:
+    columns = _read_csv_header(csv_path)
+    if not columns:
+        raise ValueError("fact_shots export has no columns.")
+
+    missing_columns = sorted({"shot_outcome", "body_part"} - set(columns))
+    if missing_columns:
+        raise ValueError(f"fact_shots missing canonical columns: {missing_columns}")
+
+    present_removed = sorted(set(columns).intersection(REMOVED_FACT_SHOT_COLUMNS))
+    if present_removed:
+        raise ValueError(f"fact_shots contains removed redundant columns: {present_removed}")
+
+    missing_outcome = 0
+    missing_body_part = 0
+    has_outcome_id = "shot_outcome_id" in columns
+    has_body_part_id = "body_part_id" in columns
+
+    with csv_path.open("r", encoding="utf-8", newline="") as f_in:
+        reader = csv.DictReader(f_in)
+        for row in reader:
+            outcome_id = (row.get("shot_outcome_id", "") or "").strip() if has_outcome_id else ""
+            body_part_id = (row.get("body_part_id", "") or "").strip() if has_body_part_id else ""
+            outcome = (row.get("shot_outcome", "") or "").strip()
+            body_part = (row.get("body_part", "") or "").strip()
+
+            if (not has_outcome_id or outcome_id != "") and outcome == "":
+                missing_outcome += 1
+            if (not has_body_part_id or body_part_id != "") and body_part == "":
+                missing_body_part += 1
+
+    if missing_outcome > 0 or missing_body_part > 0:
+        raise ValueError(
+            "fact_shots has missing canonical labels: "
+            f"shot_outcome_missing={missing_outcome}, body_part_missing={missing_body_part}"
+        )
+
+    return len(columns), csv_path.stat().st_size
+
+
+def _log_fact_shots_export_report(
+    fact_shots_csv_path: Path,
+    final_artifact_path: Path,
+    output_format: str,
+) -> None:
+    column_count, csv_size = _validate_fact_shots_csv(fact_shots_csv_path)
+    before_column_count = column_count + len(REMOVED_FACT_SHOT_COLUMNS)
+    final_size = final_artifact_path.stat().st_size if final_artifact_path.exists() else csv_size
+    print(
+        (
+            "[fact_shots] validation PASS | "
+            f"columns(before->after): {before_column_count} -> {column_count} | "
+            f"csv_size={format_bytes(csv_size)} | "
+            f"{output_format}_size={format_bytes(final_size)}"
+        ),
+        flush=True,
+    )
+
+
 def _write_empty_parquet_with_schema(out_path: Path, columns: list[str]) -> None:
     try:
         import pyarrow as pa
@@ -1224,6 +1301,8 @@ def _convert_csv_to_parquet_streaming(
         strings_can_be_null=True,
         quoted_strings_can_be_null=True,
         column_types=column_types,
+        auto_dict_encode=True,
+        auto_dict_max_cardinality=2048,
     )
 
     reader = pa_csv.open_csv(
@@ -1232,6 +1311,7 @@ def _convert_csv_to_parquet_streaming(
         convert_options=convert_options,
     )
 
+    dict_columns = [column for column in columns if column in FACT_SHOTS_DICT_ENCODE_COLUMNS]
     writer = None
     target_schema = None
     rows_processed = 0
@@ -1249,7 +1329,12 @@ def _convert_csv_to_parquet_streaming(
 
             if writer is None:
                 target_schema = batch.schema
-                writer = pq.ParquetWriter(out_path, schema=target_schema, compression="snappy")
+                writer = pq.ParquetWriter(
+                    out_path,
+                    schema=target_schema,
+                    compression="snappy",
+                    use_dictionary=dict_columns if dict_columns else True,
+                )
             else:
                 if target_schema is not None and batch.schema != target_schema:
                     # Keep schema stable after first batch.
@@ -1365,6 +1450,13 @@ def _build_star_schema_csv(
     small_dim_counts = build_small_dims(output_dir, small_dims)
     counts.update(small_dim_counts)
 
+    fact_shots_csv_path = output_dir / "fact_shots.csv"
+    _log_fact_shots_export_report(
+        fact_shots_csv_path=fact_shots_csv_path,
+        final_artifact_path=fact_shots_csv_path,
+        output_format="csv",
+    )
+
     write_model_notes(output_dir)
     return counts
 
@@ -1397,6 +1489,11 @@ def build_star_schema(
             estimate_total=estimate_total,
         )
         convert_csv_tables_to_parquet(temp_output_dir, output_dir, batch_size_rows=parquet_batch_size)
+        _log_fact_shots_export_report(
+            fact_shots_csv_path=temp_output_dir / "fact_shots.csv",
+            final_artifact_path=output_dir / "fact_shots.parquet",
+            output_format="parquet",
+        )
         write_model_notes(output_dir)
     return counts
 

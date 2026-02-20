@@ -71,16 +71,17 @@ def _extract_shot_events(fact_events_match: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_outcome_map_from_events(shot_events: pd.DataFrame) -> dict[int, str]:
-    if shot_events.empty or "shot_outcome_id" not in shot_events.columns or "shot_outcome_name" not in shot_events.columns:
+    if shot_events.empty or "shot_outcome_id" not in shot_events.columns:
         return {}
-    mapping_df = shot_events[["shot_outcome_id", "shot_outcome_name"]].copy()
+    outcome_series = _coalesce(shot_events, ["shot_outcome", "shot_outcome_name"], default=pd.NA)
+    mapping_df = pd.DataFrame({"shot_outcome_id": shot_events["shot_outcome_id"], "shot_outcome": outcome_series})
     mapping_df["shot_outcome_id"] = pd.to_numeric(mapping_df["shot_outcome_id"], errors="coerce")
     mapping_df = mapping_df.dropna(subset=["shot_outcome_id"])
     mapping_df["shot_outcome_id"] = mapping_df["shot_outcome_id"].astype(int)
-    mapping_df["shot_outcome_name"] = mapping_df["shot_outcome_name"].astype(str).str.strip()
-    mapping_df = mapping_df[mapping_df["shot_outcome_name"] != ""]
+    mapping_df["shot_outcome"] = mapping_df["shot_outcome"].astype(str).str.strip()
+    mapping_df = mapping_df[mapping_df["shot_outcome"] != ""]
     mapping_df = mapping_df.drop_duplicates(subset=["shot_outcome_id"])
-    return dict(zip(mapping_df["shot_outcome_id"], mapping_df["shot_outcome_name"]))
+    return dict(zip(mapping_df["shot_outcome_id"], mapping_df["shot_outcome"]))
 
 
 def _prepare_shot_rows(
