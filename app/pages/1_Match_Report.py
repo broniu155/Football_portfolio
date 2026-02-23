@@ -411,10 +411,23 @@ elif analysis_view == "Shots":
         match_shots=match_shots,
     )
 elif analysis_view == "Passes":
+    match_row = (
+        dim_match[pd.to_numeric(dim_match["match_id"], errors="coerce") == int(match_id)].iloc[0]
+        if "match_id" in dim_match.columns and not dim_match.empty
+        else pd.Series(dtype="object")
+    )
+    home_team_id = int(match_row["home_team_id"]) if "home_team_id" in match_row and pd.notna(match_row["home_team_id"]) else None
+    away_team_id = int(match_row["away_team_id"]) if "away_team_id" in match_row and pd.notna(match_row["away_team_id"]) else None
+    home_team_name = str(match_row.get("home_team_name") or "Home")
+    away_team_name = str(match_row.get("away_team_name") or "Away")
     render_passes_section(
         match_id=int(match_id),
-        team_id=selection["team_id"],
-        player_id=selection["player_id"],
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+        selected_team_id=selection["team_id"],
+        selected_player_id=selection["player_id"],
         events=match_events,
     )
 elif analysis_view == "Duels / Recoveries":

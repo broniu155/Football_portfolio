@@ -41,6 +41,42 @@ def _is_completed(pass_df: pd.DataFrame) -> pd.Series:
     return outcome.isna() | (outcome == "") | (outcome == "none")
 
 
+def _classify_pass_surface(pass_df: pd.DataFrame) -> pd.Series:
+    height_col = _first_col(pass_df, ["pass_height_name", "pass_height", "pass_technique_name", "pass_technique"])
+    type_col = _first_col(pass_df, ["pass_type_name", "pass_type"])
+
+    aerial = pd.Series(False, index=pass_df.index)
+    if height_col:
+        height_text = pass_df[height_col].astype("string").str.strip().str.lower()
+        aerial = aerial | height_text.str.contains("high", na=False) | height_text.str.contains("lob", na=False)
+    if type_col:
+        type_text = pass_df[type_col].astype("string").str.strip().str.lower()
+        aerial = aerial | type_text.str.contains("cross", na=False)
+    return pd.Series(pd.Categorical.from_codes(aerial.astype(int), categories=["Ground", "Aerial"]), index=pass_df.index)
+
+
+def _pass_longitudinal_cols(pass_df: pd.DataFrame) -> tuple[str | None, str | None]:
+    start_long = _first_col(pass_df, ["location_x", "x", "location_y", "y"])
+    end_long = _first_col(pass_df, ["pass_end_location_x", "pass_end_x", "end_x", "pass_end_location_y", "pass_end_y", "end_y"])
+    return start_long, end_long
+
+
+def _final_third_mask(pass_df: pd.DataFrame, is_home: bool) -> pd.Series:
+    _, end_long_col = _pass_longitudinal_cols(pass_df)
+    if end_long_col is None:
+        return pd.Series(False, index=pass_df.index)
+    end_long = pd.to_numeric(pass_df[end_long_col], errors="coerce")
+    if end_long.dropna().empty:
+        return pd.Series(False, index=pass_df.index)
+
+    pitch_len = 120.0 if float(end_long.max()) > 101.0 else 100.0
+    high_threshold = (2.0 / 3.0) * pitch_len
+    low_threshold = (1.0 / 3.0) * pitch_len
+    if is_home:
+        return end_long >= high_threshold
+    return end_long <= low_threshold
+
+
 def get_pass_events(
     match_id: int,
     team_id: int | None = None,
@@ -51,48 +87,78 @@ def get_pass_events(
     if base.empty or "type_name" not in base.columns:
         return base.iloc[0:0].copy()
     pass_df = base[base["type_name"].astype("string").str.strip().str.lower() == "pass"].copy()
+    if pass_df.empty:
+        return pass_df
     pass_df["is_completed"] = _is_completed(pass_df)
+    pass_df["pass_surface"] = _classify_pass_surface(pass_df)
     return pass_df
 
 
-@st.cache_data(show_spinner=False)
-def get_pass_summary(match_id: int, team_id: int | None, player_id: int | None, data_mode: str) -> dict[str, Any]:
-    del data_mode  # cache key only
-    pass_df = get_pass_events(match_id=match_id, team_id=team_id, player_id=player_id, events=None)
+def filter_passes(
+    pass_df: pd.DataFrame,
+    pass_surface_filter: str = "All",
+    final_third_only: bool = False,
+    is_home: bool = True,
+) -> pd.DataFrame:
+    work = pass_df.copy()
+    if work.empty:
+        return work
+    if pass_surface_filter == "Aerial":
+        work = work[work["pass_surface"] == "Aerial"]
+    elif pass_surface_filter == "Ground":
+        work = work[work["pass_surface"] == "Ground"]
+    if final_third_only:
+        work = work[_final_third_mask(work, is_home=is_home)]
+    return work
+
+
+def compute_pass_stats(pass_df: pd.DataFrame, is_home: bool) -> dict[str, float]:
     if pass_df.empty:
-        return {"total": 0, "completed": 0, "completion_pct": 0.0, "progressive": 0, "key_passes": 0}
+        return {
+            "total_passes": 0,
+            "completed_passes": 0,
+            "completion_pct": 0.0,
+            "progressive_passes": 0,
+            "final_third_passes": 0,
+            "aerial_passes": 0,
+            "ground_passes": 0,
+        }
 
-    start_x_col = _first_col(pass_df, ["location_x", "x"])
-    end_x_col = _first_col(pass_df, ["pass_end_location_x", "pass_end_x", "end_x"])
+    start_long_col, end_long_col = _pass_longitudinal_cols(pass_df)
     progressive = 0
-    if start_x_col and end_x_col:
-        sx = pd.to_numeric(pass_df[start_x_col], errors="coerce")
-        ex = pd.to_numeric(pass_df[end_x_col], errors="coerce")
-        progressive = int(((ex - sx) >= 15.0).fillna(False).sum())
-
-    key_cols = [col for col in ("pass_shot_assist", "pass_goal_assist", "pass_assisted_shot_id") if col in pass_df.columns]
-    if key_cols:
-        key_mask = pd.Series(False, index=pass_df.index)
-        for col in key_cols:
-            if pass_df[col].dtype == "bool":
-                key_mask = key_mask | pass_df[col].fillna(False)
-            else:
-                as_text = pass_df[col].astype("string").str.strip().str.lower()
-                key_mask = key_mask | pass_df[col].notna() | as_text.isin({"true", "1", "yes", "y"})
-        key_passes = int(key_mask.sum())
-    else:
-        key_passes = 0
+    if start_long_col and end_long_col:
+        start_long = pd.to_numeric(pass_df[start_long_col], errors="coerce")
+        end_long = pd.to_numeric(pass_df[end_long_col], errors="coerce")
+        delta = end_long - start_long if is_home else start_long - end_long
+        progressive = int((delta >= 15.0).fillna(False).sum())
 
     total = int(len(pass_df))
-    completed = int(pass_df["is_completed"].sum())
+    completed = int(pass_df["is_completed"].sum()) if "is_completed" in pass_df.columns else 0
     completion_pct = (completed / total * 100.0) if total else 0.0
+    final_third = int(_final_third_mask(pass_df, is_home=is_home).sum())
+    aerial = int((pass_df["pass_surface"] == "Aerial").sum()) if "pass_surface" in pass_df.columns else 0
+    ground = int((pass_df["pass_surface"] == "Ground").sum()) if "pass_surface" in pass_df.columns else 0
     return {
-        "total": total,
-        "completed": completed,
+        "total_passes": total,
+        "completed_passes": completed,
         "completion_pct": completion_pct,
-        "progressive": progressive,
-        "key_passes": key_passes,
+        "progressive_passes": progressive,
+        "final_third_passes": final_third,
+        "aerial_passes": aerial,
+        "ground_passes": ground,
     }
+
+
+@st.cache_data(show_spinner=False)
+def compute_pass_stats_cached(
+    match_id: int,
+    team_id: int,
+    is_home: bool,
+    data_mode: str,
+) -> dict[str, float]:
+    del data_mode  # cache key only
+    pass_df = get_pass_events(match_id=match_id, team_id=team_id, player_id=None, events=None)
+    return compute_pass_stats(pass_df, is_home=is_home)
 
 
 def _pitch_shapes(line_color: str = "#6c8f78") -> list[dict[str, Any]]:
@@ -133,7 +199,6 @@ def _endpoint_markers(
     x_col: str,
     y_col: str,
     color: str,
-    name: str,
     size: float,
     opacity: float,
 ) -> go.Scattergl:
@@ -145,22 +210,24 @@ def _endpoint_markers(
         y=y_values[keep],
         mode="markers",
         marker=dict(size=size, color=color, opacity=opacity, line=dict(width=0)),
-        name=name,
         hoverinfo="skip",
         showlegend=False,
     )
 
 
-def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: int = 1400) -> go.Figure:
+def render_pass_map(pass_df: pd.DataFrame, title: str, max_lines: int = 1100) -> go.Figure:
     fig = go.Figure()
     if pass_df.empty:
         fig.update_layout(
+            title=title,
             paper_bgcolor="#0b1220",
             plot_bgcolor="#111a2b",
             font=dict(color="#e7edf7"),
             xaxis=dict(visible=False),
             yaxis=dict(visible=False),
-            height=560,
+            height=500,
+            shapes=_pitch_shapes(),
+            margin=dict(l=10, r=10, t=55, b=10),
         )
         return fig
 
@@ -169,15 +236,6 @@ def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: in
     end_x_col = _first_col(pass_df, ["pass_end_location_x", "pass_end_x", "end_x"])
     end_y_col = _first_col(pass_df, ["pass_end_location_y", "pass_end_y", "end_y"])
     if not all([start_x_col, start_y_col, end_x_col, end_y_col]):
-        fig.update_layout(
-            paper_bgcolor="#0b1220",
-            plot_bgcolor="#111a2b",
-            font=dict(color="#e7edf7"),
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False),
-            height=560,
-            title="Pass Map",
-        )
         return fig
 
     work = pass_df.copy()
@@ -186,15 +244,6 @@ def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: in
     work = work.dropna(subset=[start_x_col, start_y_col, end_x_col, end_y_col])
     if work.empty:
         return fig
-
-    if pass_status == "Completed":
-        work = work[work["is_completed"]]
-    elif pass_status == "Unsuccessful":
-        work = work[~work["is_completed"]]
-
-    if work.empty:
-        return fig
-
     if len(work) > max_lines:
         work = work.sample(n=max_lines, random_state=42)
 
@@ -202,22 +251,20 @@ def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: in
     unsuccessful = work[~work["is_completed"]]
     if not completed.empty:
         fig.add_trace(_line_trace(completed, start_x_col, start_y_col, end_x_col, end_y_col, "#42d392", "Completed"))
-        fig.add_trace(_endpoint_markers(completed, start_x_col, start_y_col, "#7de8b8", "Completed start", size=4.5, opacity=0.45))
-        fig.add_trace(_endpoint_markers(completed, end_x_col, end_y_col, "#42d392", "Completed end", size=8.5, opacity=0.85))
+        fig.add_trace(_endpoint_markers(completed, start_x_col, start_y_col, "#7de8b8", size=4.2, opacity=0.45))
+        fig.add_trace(_endpoint_markers(completed, end_x_col, end_y_col, "#42d392", size=8.4, opacity=0.85))
     if not unsuccessful.empty:
         fig.add_trace(_line_trace(unsuccessful, start_x_col, start_y_col, end_x_col, end_y_col, "#f59e0b", "Unsuccessful"))
-        fig.add_trace(
-            _endpoint_markers(unsuccessful, start_x_col, start_y_col, "#f8c46d", "Unsuccessful start", size=4.5, opacity=0.45)
-        )
-        fig.add_trace(_endpoint_markers(unsuccessful, end_x_col, end_y_col, "#f59e0b", "Unsuccessful end", size=8.5, opacity=0.85))
+        fig.add_trace(_endpoint_markers(unsuccessful, start_x_col, start_y_col, "#f8c46d", size=4.2, opacity=0.45))
+        fig.add_trace(_endpoint_markers(unsuccessful, end_x_col, end_y_col, "#f59e0b", size=8.4, opacity=0.85))
 
     fig.update_layout(
-        title="Pass Map",
+        title=title,
         paper_bgcolor="#0b1220",
         plot_bgcolor="#111a2b",
         font=dict(color="#e7edf7"),
-        margin=dict(l=10, r=10, t=48, b=15),
-        height=560,
+        margin=dict(l=10, r=10, t=55, b=10),
+        height=500,
         shapes=_pitch_shapes(),
         legend=dict(orientation="h", yanchor="top", y=1.04, xanchor="left", x=0),
     )
@@ -226,31 +273,115 @@ def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: in
     return fig
 
 
-def render_passes_section(match_id: int, team_id: int | None, player_id: int | None, events: pd.DataFrame) -> None:
-    st.markdown('<div class="section-title">Passes</div>', unsafe_allow_html=True)
-    pass_df = get_pass_events(match_id=match_id, team_id=team_id, player_id=player_id, events=events)
-    summary = get_pass_summary(
-        match_id=int(match_id),
-        team_id=team_id,
-        player_id=player_id,
-        data_mode=get_active_data_mode(),
+def render_pass_comparison_panel(home_stats: dict[str, float], away_stats: dict[str, float], home_name: str, away_name: str) -> None:
+    rows = [
+        ("Total Passes", home_stats["total_passes"], away_stats["total_passes"], False),
+        ("Completed Passes", home_stats["completed_passes"], away_stats["completed_passes"], False),
+        ("Pass Completion %", home_stats["completion_pct"], away_stats["completion_pct"], True),
+        ("Progressive Passes", home_stats["progressive_passes"], away_stats["progressive_passes"], False),
+        ("Passes into Final Third", home_stats["final_third_passes"], away_stats["final_third_passes"], False),
+        ("Aerial Passes", home_stats["aerial_passes"], away_stats["aerial_passes"], False),
+        ("Ground Passes", home_stats["ground_passes"], away_stats["ground_passes"], False),
+    ]
+    html = ['<div class="match-stats-panel">']
+    html.append(f'<div class="match-stats-context">{home_name} vs {away_name}</div>')
+    for label, hv, av, is_pct in rows:
+        left = f"{hv:.1f}%" if is_pct else str(int(hv))
+        right = f"{av:.1f}%" if is_pct else str(int(av))
+        html.append(
+            "<div class='match-stats-row'>"
+            "<div class='match-stats-values'>"
+            f"<div class='home'>{left}</div>"
+            f"<div class='label'>{label}</div>"
+            f"<div class='away'>{right}</div>"
+            "</div>"
+            "</div>"
+        )
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def _team_subset(
+    pass_df: pd.DataFrame,
+    team_id: int,
+    selected_team_id: int | None,
+    selected_player_id: int | None,
+) -> pd.DataFrame:
+    work = pass_df.copy()
+    if work.empty:
+        return work
+    if selected_team_id is not None and int(selected_team_id) != int(team_id):
+        return work.iloc[0:0].copy()
+    if "team_id" in work.columns:
+        work = work[pd.to_numeric(work["team_id"], errors="coerce") == int(team_id)]
+    if selected_player_id is not None and "player_id" in work.columns:
+        work = work[pd.to_numeric(work["player_id"], errors="coerce") == int(selected_player_id)]
+    return work
+
+
+def render_passes_section(
+    match_id: int,
+    home_team_id: int | None,
+    away_team_id: int | None,
+    home_team_name: str,
+    away_team_name: str,
+    selected_team_id: int | None,
+    selected_player_id: int | None,
+    events: pd.DataFrame,
+) -> None:
+    st.markdown('<div class="section-title">Pass Comparison Stats</div>', unsafe_allow_html=True)
+
+    pass_df = get_pass_events(match_id=match_id, team_id=None, player_id=None, events=events)
+    if home_team_id is None or away_team_id is None:
+        st.info("Home/Away team metadata is unavailable for this match.")
+        return
+
+    home_passes = _team_subset(pass_df, team_id=int(home_team_id), selected_team_id=selected_team_id, selected_player_id=selected_player_id)
+    away_passes = _team_subset(pass_df, team_id=int(away_team_id), selected_team_id=selected_team_id, selected_player_id=selected_player_id)
+
+    if selected_player_id is None and selected_team_id is None:
+        cached_home = compute_pass_stats_cached(
+            match_id=int(match_id),
+            team_id=int(home_team_id),
+            is_home=True,
+            data_mode=get_active_data_mode(),
+        )
+        cached_away = compute_pass_stats_cached(
+            match_id=int(match_id),
+            team_id=int(away_team_id),
+            is_home=False,
+            data_mode=get_active_data_mode(),
+        )
+        home_stats = cached_home
+        away_stats = cached_away
+    else:
+        home_stats = compute_pass_stats(home_passes, is_home=True)
+        away_stats = compute_pass_stats(away_passes, is_home=False)
+
+    render_pass_comparison_panel(home_stats, away_stats, home_team_name, away_team_name)
+
+    surface_filter = st.radio(
+        "Pass Type Filter",
+        options=["All", "Aerial", "Ground"],
+        horizontal=True,
+        key="passes_surface_filter",
+        label_visibility="visible",
     )
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Total Passes", summary["total"])
-    m2.metric("Completed", summary["completed"])
-    m3.metric("Completion %", f"{summary['completion_pct']:.1f}%")
-    m4.metric("Progressive", summary["progressive"])
-    m5.metric("Key Passes", summary["key_passes"])
+    st.markdown('<div class="section-title">Home vs Away Pass Maps</div>', unsafe_allow_html=True)
+    c_home, c_away = st.columns(2)
+    with c_home:
+        filtered_home = filter_passes(home_passes, pass_surface_filter=surface_filter, final_third_only=False, is_home=True)
+        st.plotly_chart(render_pass_map(filtered_home, title="Home Passes"), use_container_width=True)
+    with c_away:
+        filtered_away = filter_passes(away_passes, pass_surface_filter=surface_filter, final_third_only=False, is_home=False)
+        st.plotly_chart(render_pass_map(filtered_away, title="Away Passes"), use_container_width=True)
 
-    f1, f2 = st.columns([1, 1])
-    with f1:
-        status = st.selectbox("Pass Result", ["All", "Completed", "Unsuccessful"], index=0, key="passes_result_filter")
-    with f2:
-        max_lines = st.slider("Max Pass Lines", min_value=200, max_value=3000, value=1400, step=100, key="passes_line_cap")
-
-    fig = draw_pass_map(pass_df, pass_status=status, max_lines=int(max_lines))
-    st.plotly_chart(fig, use_container_width=True)
-
-    if pass_df.empty:
-        st.info("No pass events available for the current filter context.")
+    st.markdown('<div class="section-title">Passes into Final Third</div>', unsafe_allow_html=True)
+    ft_home, ft_away = st.columns(2)
+    with ft_home:
+        final_home = filter_passes(home_passes, pass_surface_filter=surface_filter, final_third_only=True, is_home=True)
+        st.plotly_chart(render_pass_map(final_home, title="Home Final Third Passes"), use_container_width=True)
+    with ft_away:
+        final_away = filter_passes(away_passes, pass_surface_filter=surface_filter, final_third_only=True, is_home=False)
+        st.plotly_chart(render_pass_map(final_away, title="Away Final Third Passes"), use_container_width=True)
