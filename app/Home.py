@@ -5,9 +5,15 @@ import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+    sys.path.insert(0, str(REPO_ROOT))
+APP_ROOT = REPO_ROOT / "app"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
-from app.components.ui import setup_page
+try:
+    from app.components.ui import setup_page
+except (ModuleNotFoundError, KeyError):
+    from components.ui import setup_page
 
 setup_page(page_title="Football Portfolio", page_icon="⚽")
 

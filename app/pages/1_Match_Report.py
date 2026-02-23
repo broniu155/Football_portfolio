@@ -7,22 +7,41 @@ import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+    sys.path.insert(0, str(REPO_ROOT))
+APP_ROOT = REPO_ROOT / "app"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
-from app.components.analysis_navigation import render_analysis_nav
-from app.components.data import get_lineup_events, get_lineup_players, get_shots, load_dimensions
-from app.components.filters import top_filters_cascading
-from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
-from app.components.match_stats import (
-    compute_match_stats,
-    render_match_score_header,
-    render_match_stats_panel,
-    validate_goals_consistency,
-)
-from app.components.model_views import get_shots_view
-from app.components.passes import get_filtered_events, render_passes_section
-from app.components.ui import setup_page
-from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
+try:
+    from app.components.analysis_navigation import render_analysis_nav
+    from app.components.data import get_lineup_events, get_lineup_players, get_shots, load_dimensions
+    from app.components.filters import top_filters_cascading
+    from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
+    from app.components.match_stats import (
+        compute_match_stats,
+        render_match_score_header,
+        render_match_stats_panel,
+        validate_goals_consistency,
+    )
+    from app.components.model_views import get_shots_view
+    from app.components.passes import get_filtered_events, render_passes_section
+    from app.components.ui import setup_page
+    from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
+except (ModuleNotFoundError, KeyError):
+    from components.analysis_navigation import render_analysis_nav
+    from components.data import get_lineup_events, get_lineup_players, get_shots, load_dimensions
+    from components.filters import top_filters_cascading
+    from components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
+    from components.match_stats import (
+        compute_match_stats,
+        render_match_score_header,
+        render_match_stats_panel,
+        validate_goals_consistency,
+    )
+    from components.model_views import get_shots_view
+    from components.passes import get_filtered_events, render_passes_section
+    from components.ui import setup_page
+    from components.viz import draw_pitch_figure, draw_split_lineup_pitch
 
 setup_page(page_title="Match Report", page_icon=":bar_chart:")
 

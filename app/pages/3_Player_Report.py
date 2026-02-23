@@ -6,13 +6,23 @@ import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
+    sys.path.insert(0, str(REPO_ROOT))
+APP_ROOT = REPO_ROOT / "app"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
-from app.components.data import get_shots, load_dimensions
-from app.components.filters import sidebar_filters_cascading
-from app.components.model_views import get_shots_view
-from app.components.ui import setup_page
-from app.components.viz import draw_pitch_figure
+try:
+    from app.components.data import get_shots, load_dimensions
+    from app.components.filters import sidebar_filters_cascading
+    from app.components.model_views import get_shots_view
+    from app.components.ui import setup_page
+    from app.components.viz import draw_pitch_figure
+except (ModuleNotFoundError, KeyError):
+    from components.data import get_shots, load_dimensions
+    from components.filters import sidebar_filters_cascading
+    from components.model_views import get_shots_view
+    from components.ui import setup_page
+    from components.viz import draw_pitch_figure
 
 setup_page(page_title="Player Report", page_icon="👤")
 

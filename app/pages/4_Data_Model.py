@@ -1,9 +1,20 @@
 from pathlib import Path
+import sys
 
 import duckdb
 import streamlit as st
 
-from app.components.ui import setup_page
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+APP_ROOT = REPO_ROOT / "app"
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+try:
+    from app.components.ui import setup_page
+except (ModuleNotFoundError, KeyError):
+    from components.ui import setup_page
 
 setup_page(page_title="Data Model", page_icon="🗂️")
 
