@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import streamlit as st
 
-ANALYSIS_VIEWS = ("Shots", "Passes", "Duels / Recoveries", "More")
+ANALYSIS_VIEWS = ("Stats", "Shots", "Passes", "Duels / Recoveries", "More")
 
 
-def render_analysis_nav(current_view: str = "Shots") -> str:
+def render_analysis_nav(current_view: str = "Stats") -> str:
     if "analysis_view" not in st.session_state:
-        st.session_state["analysis_view"] = current_view if current_view in ANALYSIS_VIEWS else "Shots"
+        st.session_state["analysis_view"] = current_view if current_view in ANALYSIS_VIEWS else "Stats"
     elif st.session_state["analysis_view"] not in ANALYSIS_VIEWS:
-        st.session_state["analysis_view"] = "Shots"
+        st.session_state["analysis_view"] = "Stats"
 
     st.markdown('<div class="analysis-nav-title">Analysis View</div>', unsafe_allow_html=True)
     if hasattr(st, "segmented_control"):
@@ -28,4 +28,4 @@ def render_analysis_nav(current_view: str = "Shots") -> str:
             label_visibility="collapsed",
         )
 
-    return str(selected or st.session_state.get("analysis_view") or "Shots")
+    return str(selected or st.session_state.get("analysis_view") or "Stats")

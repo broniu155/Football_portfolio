@@ -128,6 +128,29 @@ def _line_trace(df: pd.DataFrame, sx_col: str, sy_col: str, ex_col: str, ey_col:
     return go.Scattergl(x=x_values, y=y_values, mode="lines", line=dict(width=1.4, color=color), name=name, opacity=0.62)
 
 
+def _endpoint_markers(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    color: str,
+    name: str,
+    size: float,
+    opacity: float,
+) -> go.Scattergl:
+    x_values = pd.to_numeric(df[x_col], errors="coerce")
+    y_values = pd.to_numeric(df[y_col], errors="coerce")
+    keep = x_values.notna() & y_values.notna()
+    return go.Scattergl(
+        x=x_values[keep],
+        y=y_values[keep],
+        mode="markers",
+        marker=dict(size=size, color=color, opacity=opacity, line=dict(width=0)),
+        name=name,
+        hoverinfo="skip",
+        showlegend=False,
+    )
+
+
 def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: int = 1400) -> go.Figure:
     fig = go.Figure()
     if pass_df.empty:
@@ -179,8 +202,14 @@ def draw_pass_map(pass_df: pd.DataFrame, pass_status: str = "All", max_lines: in
     unsuccessful = work[~work["is_completed"]]
     if not completed.empty:
         fig.add_trace(_line_trace(completed, start_x_col, start_y_col, end_x_col, end_y_col, "#42d392", "Completed"))
+        fig.add_trace(_endpoint_markers(completed, start_x_col, start_y_col, "#7de8b8", "Completed start", size=4.5, opacity=0.45))
+        fig.add_trace(_endpoint_markers(completed, end_x_col, end_y_col, "#42d392", "Completed end", size=8.5, opacity=0.85))
     if not unsuccessful.empty:
         fig.add_trace(_line_trace(unsuccessful, start_x_col, start_y_col, end_x_col, end_y_col, "#f59e0b", "Unsuccessful"))
+        fig.add_trace(
+            _endpoint_markers(unsuccessful, start_x_col, start_y_col, "#f8c46d", "Unsuccessful start", size=4.5, opacity=0.45)
+        )
+        fig.add_trace(_endpoint_markers(unsuccessful, end_x_col, end_y_col, "#f59e0b", "Unsuccessful end", size=8.5, opacity=0.85))
 
     fig.update_layout(
         title="Pass Map",

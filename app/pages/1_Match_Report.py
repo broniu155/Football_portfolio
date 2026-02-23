@@ -44,28 +44,22 @@ def _render_context_chips(selection: dict[str, object]) -> None:
         st.markdown(" ".join([f'<span class="context-chip">{c}</span>' for c in chips]), unsafe_allow_html=True)
 
 
-def _render_match_core(
+def _render_score_header(official_stats: dict[str, object]) -> None:
+    st.markdown('<div class="section-title">Match Score</div>', unsafe_allow_html=True)
+    render_match_score_header(official_stats)
+
+
+def _render_stats_section(
     selection: dict[str, object],
     dim_match: pd.DataFrame,
     dim_player: pd.DataFrame,
     match_events: pd.DataFrame,
-    lineup_events: pd.DataFrame,
-    lineup_players: pd.DataFrame,
     match_shots: pd.DataFrame,
-) -> tuple[int | None, int | None]:
+    official_stats: dict[str, object],
+) -> None:
     match_id = int(selection["match_id"])
     team_id = selection["team_id"]
     player_id = selection["player_id"]
-
-    official_stats = compute_match_stats(
-        fact_events=match_events,
-        fact_shots=match_shots,
-        dim_match=dim_match,
-        match_id=match_id,
-    )
-
-    st.markdown('<div class="section-title">Match Score</div>', unsafe_allow_html=True)
-    render_match_score_header(official_stats)
 
     apply_stats_filters = st.toggle(
         "Apply current filters to stats",
@@ -73,20 +67,17 @@ def _render_match_core(
         help="OFF shows full match stats for both teams.",
         key="apply_stats_filters",
     )
-    stats_events = (
-        get_filtered_events(match_id=match_id, team_id=team_id, player_id=player_id, events=match_events)
-        if apply_stats_filters
-        else match_events
-    )
-    stats_shots = _apply_team_player_filters(match_shots, team_id=team_id, player_id=player_id) if apply_stats_filters else match_shots
-    stats_payload = compute_match_stats(
-        fact_events=stats_events,
-        fact_shots=stats_shots,
-        dim_match=dim_match,
-        match_id=match_id,
-    )
-    if not apply_stats_filters:
-        stats_payload["metrics"]["Goals"] = (official_stats.get("home_score"), official_stats.get("away_score"))
+    if apply_stats_filters:
+        stats_events = get_filtered_events(match_id=match_id, team_id=team_id, player_id=player_id, events=match_events)
+        stats_shots = _apply_team_player_filters(match_shots, team_id=team_id, player_id=player_id)
+        stats_payload = compute_match_stats(
+            fact_events=stats_events,
+            fact_shots=stats_shots,
+            dim_match=dim_match,
+            match_id=match_id,
+        )
+    else:
+        stats_payload = official_stats
 
     try:
         validate_goals_consistency(stats_payload, apply_filtered_stats=apply_stats_filters)
@@ -95,6 +86,10 @@ def _render_match_core(
 
     st.markdown('<div class="section-title">Match Stats</div>', unsafe_allow_html=True)
     render_match_stats_panel(stats_payload, filtered=apply_stats_filters)
+
+    with st.spinner("Loading lineup context..."):
+        lineup_events = get_lineup_events(match_id=match_id)
+        lineup_players = get_lineup_players(match_id=match_id)
 
     st.markdown('<div class="section-title">Starting XI & Formation</div>', unsafe_allow_html=True)
     match_row = (
@@ -235,8 +230,6 @@ def _render_match_core(
                 away_tbl["jersey_number"] = away_tbl["jersey_number"].fillna("?")
             display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in away_tbl.columns]
             st.dataframe(away_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
-
-    return home_team_id, away_team_id
 
 
 def _render_shots_section(
@@ -385,26 +378,31 @@ if match_id is None:
     st.stop()
 
 st.caption(selection["match_label"] or "")
-analysis_view = render_analysis_nav(current_view=str(st.session_state.get("analysis_view", "Shots")))
-_render_context_chips(selection)
-
 with st.spinner("Loading match context..."):
     match_events = get_filtered_events(match_id=int(match_id), events=None)
-    lineup_events = get_lineup_events(match_id=match_id)
-    lineup_players = get_lineup_players(match_id=match_id)
     match_shots = get_shots(match_id=match_id)
 
-_render_match_core(
-    selection=selection,
+official_stats = compute_match_stats(
+    fact_events=match_events,
+    fact_shots=match_shots,
     dim_match=dim_match,
-    dim_player=dim_player,
-    match_events=match_events,
-    lineup_events=lineup_events,
-    lineup_players=lineup_players,
-    match_shots=match_shots,
+    match_id=int(match_id),
 )
+_render_score_header(official_stats)
 
-if analysis_view == "Shots":
+analysis_view = render_analysis_nav(current_view=str(st.session_state.get("analysis_view", "Stats")))
+_render_context_chips(selection)
+
+if analysis_view == "Stats":
+    _render_stats_section(
+        selection=selection,
+        dim_match=dim_match,
+        dim_player=dim_player,
+        match_events=match_events,
+        match_shots=match_shots,
+        official_stats=official_stats,
+    )
+elif analysis_view == "Shots":
     _render_shots_section(
         selection=selection,
         dim_match=dim_match,

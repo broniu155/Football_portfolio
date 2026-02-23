@@ -48,6 +48,30 @@
   color: #e7edf7 !important;
 }
 
+[data-baseweb="select"] [id$="-value"],
+[data-baseweb="select"] [class*="singleValue"],
+[data-baseweb="select"] [class*="ValueContainer"] > div {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.22;
+  font-size: clamp(0.8rem, 0.76rem + 0.15vw, 0.92rem);
+}
+
+[data-baseweb="select"] > div {
+  min-height: 40px;
+}
+
+[data-baseweb="select"] [class*="ValueContainer"] {
+  padding-top: 0.2rem !important;
+  padding-bottom: 0.2rem !important;
+}
+
+[data-baseweb="select"] [id$="-value"] {
+  cursor: help;
+}
+
 [data-testid="stSidebar"] [data-baseweb="select"] input,
 [data-baseweb="select"] input {
   color: #e7edf7 !important;
