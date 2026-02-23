@@ -315,3 +315,32 @@ h1 {
 .match-stats-bars .fill.away {
   background: #d1d5db;
 }
+
+.analysis-nav-title {
+  margin-top: 0.4rem;
+  margin-bottom: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c7d4e8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.coming-soon-card {
+  margin-top: 0.45rem;
+  background: linear-gradient(180deg, #101d31 0%, #0d1728 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+}
+
+.coming-soon-title {
+  color: #f5f9ff;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.coming-soon-subtitle {
+  color: #a9b8ce;
+  font-size: 0.9rem;
+}
