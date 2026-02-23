@@ -30,6 +30,8 @@ def _pitch_shapes(line_color: str = "#6c8f78") -> list[dict]:
     shapes.extend(
         [outer, halfway, center_circle, left_box, right_box, left_six, right_six, left_goal, right_goal, left_spot, right_spot]
     )
+    for shape in shapes:
+        shape["layer"] = "below"
     return shapes
 
 
@@ -214,7 +216,7 @@ def draw_formation_pitch(
 
 def _lineup_pitch_shapes(line_color: str = "#6c8f78") -> list[dict]:
     # 120x100 pitch for split-half lineup view.
-    return [
+    shapes = [
         dict(type="rect", x0=0, y0=0, x1=120, y1=100, line=dict(color=line_color, width=2)),
         dict(type="line", x0=0, y0=50, x1=120, y1=50, line=dict(color=line_color, width=2)),
         dict(type="circle", x0=50, y0=40, x1=70, y1=60, line=dict(color=line_color, width=2)),
@@ -230,6 +232,9 @@ def _lineup_pitch_shapes(line_color: str = "#6c8f78") -> list[dict]:
         dict(type="circle", x0=59.3, y0=87.3, x1=60.7, y1=88.7, fillcolor=line_color, line=dict(color=line_color)),
         dict(type="rect", x0=55, y0=100, x1=65, y1=102, line=dict(color=line_color, width=2)),
     ]
+    for shape in shapes:
+        shape["layer"] = "below"
+    return shapes
 
 
 def _lineup_df(positions: list[dict[str, object]]) -> pd.DataFrame:

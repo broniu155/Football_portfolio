@@ -41,6 +41,33 @@ POSITION_COORDS_ATTACK_UP: dict[str, tuple[float, float]] = {
     "secondary striker": (60.0, 58.0),
 }
 
+POSITION_LINE_GROUPS: dict[str, str] = {
+    "left back": "def",
+    "left center back": "def",
+    "center back": "def",
+    "right center back": "def",
+    "right back": "def",
+    "left wing back": "def",
+    "right wing back": "def",
+    "left defensive midfield": "dm",
+    "center defensive midfield": "dm",
+    "right defensive midfield": "dm",
+    "left center midfield": "mid",
+    "center midfield": "mid",
+    "right center midfield": "mid",
+    "left midfield": "mid",
+    "right midfield": "mid",
+    "left attacking midfield": "am",
+    "center attacking midfield": "am",
+    "right attacking midfield": "am",
+    "left wing": "am",
+    "right wing": "am",
+    "left center forward": "fwd",
+    "center forward": "fwd",
+    "right center forward": "fwd",
+    "secondary striker": "fwd",
+}
+
 
 def _lineups_dir() -> Path:
     return LINEUPS_DIR
@@ -220,7 +247,12 @@ def _is_starter(player: dict[str, Any]) -> bool:
     positions = [seg for seg in player.get("positions", []) if isinstance(seg, dict)]
     if not positions:
         return False
-    if any(str(seg.get("start_reason") or "").strip().lower() == "starting xi" for seg in positions):
+    if any(
+        str(seg.get("start_reason") or "").strip().lower() == "starting xi"
+        and str(seg.get("from") or "").strip() == "00:00"
+        and int(seg.get("from_period") or 1) == 1
+        for seg in positions
+    ):
         return True
     earliest = min(positions, key=lambda seg: _clock_to_seconds(seg.get("from")))
     return str(earliest.get("from") or "").strip() == "00:00"
@@ -237,6 +269,52 @@ def _formation_from_text(value: Any) -> str | None:
     if re.fullmatch(r"\d{3,5}", text):
         return "-".join(list(text))
     return None
+
+
+def _line_group_for_position(position_name: Any) -> str | None:
+    key = _normalize_position_name(position_name)
+    if key == "goalkeeper":
+        return "gk"
+    if key in POSITION_LINE_GROUPS:
+        return POSITION_LINE_GROUPS[key]
+    if "back" in key or "defend" in key:
+        return "def"
+    if "midfield" in key:
+        return "mid"
+    if "wing" in key and "back" not in key:
+        return "am"
+    if "forward" in key or "striker" in key:
+        return "fwd"
+    return None
+
+
+def infer_formation(starting_xi: list[dict[str, Any]]) -> str:
+    if not starting_xi:
+        return "Unknown"
+    outfield_groups: list[str] = []
+    for player in starting_xi:
+        group = _line_group_for_position(player.get("position_name"))
+        if group is None:
+            continue
+        if group == "gk":
+            continue
+        outfield_groups.append(group)
+    if not outfield_groups:
+        return "Unknown"
+
+    order = ["def", "dm", "mid", "am", "fwd"]
+    counts = [outfield_groups.count(group) for group in order]
+    compressed = [c for c in counts if c > 0]
+    if not compressed:
+        return "Unknown"
+
+    total = sum(compressed)
+    if total != 10:
+        compressed = [compressed[0], max(0, total - compressed[0])]
+        compressed = [c for c in compressed if c > 0]
+        if not compressed or sum(compressed) == 0:
+            return "Unknown"
+    return "-".join(str(c) for c in compressed)
 
 
 def get_starting_xi(
@@ -280,6 +358,12 @@ def get_formation(
     team_id: int | None = None,
     team_name: str | None = None,
 ) -> str | None:
+    xi = get_starting_xi(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
+    if not xi.empty:
+        inferred = infer_formation(xi.to_dict(orient="records"))
+        if inferred != "Unknown":
+            return inferred
+
     team_events = _team_filter(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
     if team_events.empty:
         return None
@@ -299,7 +383,7 @@ def get_formation(
             parsed = _formation_from_text(row.get(col))
             if parsed:
                 return parsed
-    return None
+    return inferred if "inferred" in locals() and inferred != "Unknown" else None
 
 
 def _coords_for_position(position_name: Any) -> tuple[float, float] | None:

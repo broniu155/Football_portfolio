@@ -43,6 +43,7 @@ class LineupsSmokeTests(unittest.TestCase):
         self.assertFalse(xi["player_name"].astype(str).str.strip().eq("").all())
 
         formation = get_formation(self.events, match_id=1, team_id=10)
+        self.assertNotEqual(formation, "Unknown")
         positions = get_starting_positions(self.events, match_id=1, team_id=10, formation=formation)
         self.assertGreater(len(positions), 0)
         self.assertLessEqual(len(positions), 11)
