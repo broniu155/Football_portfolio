@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from app.components.data import get_events, get_lineup_events, get_shots, load_dimensions
+from app.components.data import get_events, get_lineup_events, get_lineup_players, get_shots, load_dimensions
 from app.components.filters import sidebar_filters_cascading
 from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
 from app.components.match_stats import (
@@ -50,6 +50,7 @@ st.caption(selection["match_label"] or "")
 with st.spinner("Loading match context..."):
     match_events = get_events(match_id=match_id)
     lineup_events = get_lineup_events(match_id=match_id)
+    lineup_players = get_lineup_players(match_id=match_id)
     match_shots = get_shots(match_id=match_id)
     context_shots = get_shots(match_id=match_id, team_id=team_id, player_id=player_id)
 
@@ -100,17 +101,48 @@ away_team_id = int(match_row["away_team_id"]) if "away_team_id" in match_row and
 home_team_name = str(match_row.get("home_team_name") or "Home")
 away_team_name = str(match_row.get("away_team_name") or "Away")
 
-home_xi = get_starting_xi(lineup_events, match_id=int(match_id), team_id=home_team_id, team_name=home_team_name)
-away_xi = get_starting_xi(lineup_events, match_id=int(match_id), team_id=away_team_id, team_name=away_team_name)
-home_formation = get_formation(lineup_events, match_id=int(match_id), team_id=home_team_id, team_name=home_team_name)
-away_formation = get_formation(lineup_events, match_id=int(match_id), team_id=away_team_id, team_name=away_team_name)
+home_xi = get_starting_xi(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=home_team_id,
+    team_name=home_team_name,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
+)
+away_xi = get_starting_xi(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=away_team_id,
+    team_name=away_team_name,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
+)
+home_formation = get_formation(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=home_team_id,
+    team_name=home_team_name,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
+)
+away_formation = get_formation(
+    lineup_events,
+    match_id=int(match_id),
+    team_id=away_team_id,
+    team_name=away_team_name,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
+)
 home_positions = get_starting_positions(
     lineup_events,
     match_id=int(match_id),
     team_id=home_team_id,
     team_name=home_team_name,
     formation=home_formation,
-    is_home=True,
+    selected_home_team_id=home_team_id,
+    selected_away_team_id=away_team_id,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
 )
 away_positions = get_starting_positions(
     lineup_events,
@@ -118,7 +150,10 @@ away_positions = get_starting_positions(
     team_id=away_team_id,
     team_name=away_team_name,
     formation=away_formation,
-    is_home=False,
+    selected_home_team_id=home_team_id,
+    selected_away_team_id=away_team_id,
+    lineup_players=lineup_players,
+    dim_player=dim_player,
 )
 hdr_home, hdr_away = st.columns(2)
 with hdr_home:
@@ -135,8 +170,24 @@ st.plotly_chart(
 )
 
 unmapped = sorted(
-    set(get_unmapped_position_names(int(match_id), lineup_events, team_id=home_team_id))
-    | set(get_unmapped_position_names(int(match_id), lineup_events, team_id=away_team_id))
+    set(
+        get_unmapped_position_names(
+            int(match_id),
+            lineup_events,
+            team_id=home_team_id,
+            lineup_players=lineup_players,
+            dim_player=dim_player,
+        )
+    )
+    | set(
+        get_unmapped_position_names(
+            int(match_id),
+            lineup_events,
+            team_id=away_team_id,
+            lineup_players=lineup_players,
+            dim_player=dim_player,
+        )
+    )
 )
 if unmapped:
     st.warning("Unmapped positions placed in fallback midfield zone: " + ", ".join(unmapped))

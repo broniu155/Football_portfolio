@@ -13,7 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.export_star_schema import build_star_schema
 
-REQUIRED_TABLES = ("dim_match", "dim_team", "dim_player", "fact_events", "fact_shots")
+REQUIRED_TABLES = ("dim_match", "dim_team", "dim_player", "fact_events", "fact_shots", "fact_lineups_players")
 OPTIONAL_TABLES = (
     "dim_competition",
     "dim_season",
@@ -105,6 +105,7 @@ def build_sample(
     dim_match = _read_table(model_dir, "dim_match")
     fact_events = _read_table(model_dir, "fact_events")
     fact_shots = _read_table(model_dir, "fact_shots")
+    fact_lineups_players = _read_table(model_dir, "fact_lineups_players")
     dim_team = _read_table(model_dir, "dim_team")
     dim_player = _read_table(model_dir, "dim_player")
 
@@ -130,14 +131,17 @@ def build_sample(
 
     fact_events["match_id"] = pd.to_numeric(fact_events["match_id"], errors="coerce")
     fact_shots["match_id"] = pd.to_numeric(fact_shots["match_id"], errors="coerce")
+    fact_lineups_players["match_id"] = pd.to_numeric(fact_lineups_players["match_id"], errors="coerce")
     fact_events_sample = fact_events[fact_events["match_id"].isin(match_id_set)].copy()
     fact_shots_sample = fact_shots[fact_shots["match_id"].isin(match_id_set)].copy()
+    fact_lineups_sample = fact_lineups_players[fact_lineups_players["match_id"].isin(match_id_set)].copy()
 
     team_ids = set()
     for source_df, cols in (
         (dim_match_sample, ("home_team_id", "away_team_id")),
         (fact_events_sample, ("team_id",)),
         (fact_shots_sample, ("team_id",)),
+        (fact_lineups_sample, ("team_id",)),
     ):
         for col in cols:
             if col in source_df.columns:
@@ -145,7 +149,7 @@ def build_sample(
                 team_ids.update(values)
 
     player_ids = set()
-    for source_df in (fact_events_sample, fact_shots_sample):
+    for source_df in (fact_events_sample, fact_shots_sample, fact_lineups_sample):
         if "player_id" in source_df.columns:
             values = pd.to_numeric(source_df["player_id"], errors="coerce").dropna().astype(int).tolist()
             player_ids.update(values)
@@ -162,6 +166,7 @@ def build_sample(
         "dim_player": dim_player_sample,
         "fact_events": fact_events_sample,
         "fact_shots": fact_shots_sample,
+        "fact_lineups_players": fact_lineups_sample,
     }
 
     for optional in OPTIONAL_TABLES:

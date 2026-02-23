@@ -54,7 +54,7 @@ class LineupsSmokeTests(unittest.TestCase):
         self.assertIn("Center Forward", by_name)
         self.assertIn("Right Center Back", by_name)
         # Home CF should be further upfield than home RCB.
-        self.assertGreater(float(by_name["Center Forward"]["y"]), float(by_name["Right Center Back"]["y"]))
+        self.assertLess(float(by_name["Center Forward"]["y"]), float(by_name["Right Center Back"]["y"]))
 
         # Home and away keepers must be on opposite ends.
         home = get_starting_positions(self.events, match_id=1, team_id=10, is_home=True)
@@ -63,8 +63,8 @@ class LineupsSmokeTests(unittest.TestCase):
         away_gk = next((row for row in away if row["position_name"] == "Goalkeeper"), None)
         self.assertIsNotNone(home_gk)
         self.assertIsNotNone(away_gk)
-        self.assertLess(float(home_gk["y"]), 50.0)
-        self.assertGreater(float(away_gk["y"]), 50.0)
+        self.assertGreater(float(home_gk["y"]), 50.0)
+        self.assertLess(float(away_gk["y"]), 50.0)
 
         unmapped = get_unmapped_position_names(match_id=1, fact_events=self.events, team_id=10)
         self.assertIn("Mystery Role", unmapped)

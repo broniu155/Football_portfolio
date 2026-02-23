@@ -17,9 +17,10 @@
   "row_counts": {
     "dim_match": 10,
     "dim_team": 11,
-    "dim_player": 177,
+    "dim_player": 220,
     "fact_events": 38631,
     "fact_shots": 282,
+    "fact_lineups_players": 396,
     "dim_competition": 21,
     "dim_season": 48,
     "dim_shot_outcome": 8,

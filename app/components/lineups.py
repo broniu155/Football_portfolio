@@ -322,6 +322,8 @@ def get_starting_xi(
     match_id: int,
     team_id: int | None = None,
     team_name: str | None = None,
+    lineup_players: pd.DataFrame | None = None,
+    dim_player: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     lineup_doc = _load_lineup_file(int(match_id), str(_lineups_dir()))
     if lineup_doc is not None:
@@ -346,10 +348,11 @@ def get_starting_xi(
                 )
             xi = pd.DataFrame(rows).drop_duplicates(subset=["player_id", "player_name"]).head(11).reset_index(drop=True)
             if not xi.empty:
-                return xi
+                return _merge_jersey_numbers(xi, lineup_players=lineup_players, dim_player=dim_player, team_id=team_id)
 
     team_events = _team_filter(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
-    return _canonical_xi_from_events(team_events).head(11).reset_index(drop=True)
+    xi = _canonical_xi_from_events(team_events).head(11).reset_index(drop=True)
+    return _merge_jersey_numbers(xi, lineup_players=lineup_players, dim_player=dim_player, team_id=team_id)
 
 
 def get_formation(
@@ -357,8 +360,17 @@ def get_formation(
     match_id: int,
     team_id: int | None = None,
     team_name: str | None = None,
+    lineup_players: pd.DataFrame | None = None,
+    dim_player: pd.DataFrame | None = None,
 ) -> str | None:
-    xi = get_starting_xi(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
+    xi = get_starting_xi(
+        fact_events,
+        match_id=match_id,
+        team_id=team_id,
+        team_name=team_name,
+        lineup_players=lineup_players,
+        dim_player=dim_player,
+    )
     if not xi.empty:
         inferred = infer_formation(xi.to_dict(orient="records"))
         if inferred != "Unknown":
@@ -392,12 +404,77 @@ def _coords_for_position(position_name: Any) -> tuple[float, float] | None:
 
 
 def _transform_half_coords(x: float, y_attack_up: float, is_home: bool) -> tuple[float, float]:
-    # Home defends bottom goal and attacks upward; away is mirrored to defend top goal.
+    # Home occupies top half; away is mirrored into bottom half.
     if is_home:
-        y = 100.0 - y_attack_up
-    else:
         y = y_attack_up
+    else:
+        y = 100.0 - y_attack_up
     return x, y
+
+
+def _jersey_text(value: Any) -> str:
+    if pd.isna(value):
+        return "?"
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "<na>"}:
+        return "?"
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text
+
+
+def _starter_mask(series: pd.Series) -> pd.Series:
+    lowered = series.astype("string").str.strip().str.lower()
+    return lowered.isin({"1", "true", "t", "yes", "y"})
+
+
+def _merge_jersey_numbers(
+    xi: pd.DataFrame,
+    lineup_players: pd.DataFrame | None = None,
+    dim_player: pd.DataFrame | None = None,
+    team_id: int | None = None,
+) -> pd.DataFrame:
+    if xi.empty:
+        return xi
+
+    out = xi.copy()
+    if "jersey_number" not in out.columns:
+        out["jersey_number"] = pd.NA
+    out["jersey_number"] = pd.to_numeric(out["jersey_number"], errors="coerce")
+
+    if lineup_players is not None and not lineup_players.empty:
+        lp = lineup_players.copy()
+        if "team_id" in lp.columns and team_id is not None:
+            lp["team_id"] = pd.to_numeric(lp["team_id"], errors="coerce")
+            lp = lp[lp["team_id"] == int(team_id)]
+        if not lp.empty and "starter" in lp.columns:
+            mask = _starter_mask(lp["starter"])
+            if bool(mask.any()):
+                lp = lp[mask]
+        if not lp.empty:
+            if "player_id" in lp.columns:
+                lp["player_id"] = pd.to_numeric(lp["player_id"], errors="coerce")
+            if "jersey_number" in lp.columns:
+                lp["jersey_number"] = pd.to_numeric(lp["jersey_number"], errors="coerce")
+            if {"player_id", "jersey_number"}.issubset(lp.columns):
+                map_df = lp.dropna(subset=["player_id", "jersey_number"]).drop_duplicates(subset=["player_id"])
+                if not map_df.empty and "player_id" in out.columns:
+                    out["player_id"] = pd.to_numeric(out["player_id"], errors="coerce")
+                    mapping = map_df.set_index("player_id")["jersey_number"]
+                    out["jersey_number"] = out["jersey_number"].combine_first(out["player_id"].map(mapping))
+
+    missing_mask = out["jersey_number"].isna()
+    if bool(missing_mask.any()) and dim_player is not None and not dim_player.empty and "jersey_number" in dim_player.columns:
+        dp = dim_player.copy()
+        dp["player_id"] = pd.to_numeric(dp.get("player_id"), errors="coerce")
+        dp["jersey_number"] = pd.to_numeric(dp.get("jersey_number"), errors="coerce")
+        map_df = dp.dropna(subset=["player_id", "jersey_number"]).drop_duplicates(subset=["player_id"])
+        if not map_df.empty and "player_id" in out.columns:
+            mapping = map_df.set_index("player_id")["jersey_number"]
+            out["jersey_number"] = out["jersey_number"].combine_first(out["player_id"].map(mapping))
+
+    return out
 
 
 def get_unmapped_position_names(
@@ -405,9 +482,18 @@ def get_unmapped_position_names(
     fact_events: pd.DataFrame | None = None,
     team_id: int | None = None,
     team_name: str | None = None,
+    lineup_players: pd.DataFrame | None = None,
+    dim_player: pd.DataFrame | None = None,
 ) -> list[str]:
     events = fact_events if fact_events is not None else pd.DataFrame()
-    xi = get_starting_xi(events, match_id=match_id, team_id=team_id, team_name=team_name)
+    xi = get_starting_xi(
+        events,
+        match_id=match_id,
+        team_id=team_id,
+        team_name=team_name,
+        lineup_players=lineup_players,
+        dim_player=dim_player,
+    )
     if xi.empty or "position_name" not in xi.columns:
         return []
     unmapped: set[str] = set()
@@ -428,11 +514,32 @@ def get_starting_positions(
     formation: str | None = None,
     half: str = "top",
     is_home: bool | None = None,
+    selected_home_team_id: int | None = None,
+    selected_away_team_id: int | None = None,
+    lineup_players: pd.DataFrame | None = None,
+    dim_player: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     del formation  # positions are driven by lineup JSON positions, not synthetic formation lines.
-    xi = get_starting_xi(fact_events, match_id=match_id, team_id=team_id, team_name=team_name)
+    xi = get_starting_xi(
+        fact_events,
+        match_id=match_id,
+        team_id=team_id,
+        team_name=team_name,
+        lineup_players=lineup_players,
+        dim_player=dim_player,
+    )
     if xi.empty:
         return []
+
+    home_flag: bool | None = None
+    if team_id is not None and selected_home_team_id is not None:
+        home_flag = int(team_id) == int(selected_home_team_id)
+    elif team_id is not None and selected_away_team_id is not None and int(team_id) == int(selected_away_team_id):
+        home_flag = False
+    elif is_home is not None:
+        home_flag = bool(is_home)
+    else:
+        home_flag = half.strip().lower() == "top"
 
     rows: list[dict[str, Any]] = []
     for _, row in xi.iterrows():
@@ -444,11 +551,10 @@ def get_starting_positions(
             x, y_attack_up = mapped
             approximate = False
 
-        home_flag = bool(is_home) if is_home is not None else (half.strip().lower() == "bottom")
-        x, y = _transform_half_coords(float(x), float(y_attack_up), is_home=home_flag)
+        x, y = _transform_half_coords(float(x), float(y_attack_up), is_home=bool(home_flag))
 
         jersey = row.get("jersey_number")
-        jersey_text = str(int(jersey)) if pd.notna(jersey) and str(jersey).strip() else "?"
+        jersey_text = _jersey_text(jersey)
         rows.append(
             {
                 "player_id": row.get("player_id"),

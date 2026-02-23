@@ -764,6 +764,28 @@ def get_lineup_events(match_id: int) -> pd.DataFrame:
     return _get_lineup_events_cached(match_id=int(match_id), fact_events_path=str(table_paths["fact_events"]), data_mode=data_mode)
 
 
+@st.cache_data(show_spinner=False)
+def _get_lineup_players_cached(match_id: int, fact_lineups_path: str | None, data_mode: str) -> pd.DataFrame:
+    del data_mode  # cache key only
+    if not fact_lineups_path:
+        return pd.DataFrame(
+            columns=["match_id", "team_id", "player_id", "position_id", "jersey_number", "starter", "from", "to"]
+        )
+    projection = ["match_id", "team_id", "player_id", "position_id", "jersey_number", "starter", "from", "to"]
+    return _query_fact_rows(Path(fact_lineups_path), match_id=match_id, selected_columns=projection)
+
+
+def get_lineup_players(match_id: int) -> pd.DataFrame:
+    data_mode = _active_mode_from_state()
+    _, resolved_dir, _ = _resolve_active_table_paths(render_mode_selector=False)
+    fact_lineups_path = _resolve_table_file(resolved_dir, "fact_lineups_players")
+    return _get_lineup_players_cached(
+        match_id=int(match_id),
+        fact_lineups_path=str(fact_lineups_path) if fact_lineups_path is not None else None,
+        data_mode=data_mode,
+    )
+
+
 def load_fact_events(match_id: int) -> pd.DataFrame:
     return get_events(match_id=match_id)
 
