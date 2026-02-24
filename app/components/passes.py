@@ -6,7 +6,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.components.data import get_events
+try:
+    from app.components.data import get_events
+except (ModuleNotFoundError, KeyError):
+    from components.data import get_events
+
+PASS_HEIGHT_CANDIDATES = ["pass_height_name", "pass_height", "pass.height.name", "pass_height__name"]
+PASS_HEIGHT_ID_CANDIDATES = ["pass_height_id", "pass.height.id"]
+PASS_CROSS_CANDIDATES = ["pass_cross", "pass.cross", "pass_cross_flag", "cross"]
+PASS_OUTCOME_NAME_CANDIDATES = ["pass_outcome_name", "pass_outcome", "pass.outcome.name"]
+PASS_OUTCOME_ID_CANDIDATES = ["pass_outcome_id", "pass.outcome.id"]
 
 
 def get_filtered_events(
@@ -34,25 +43,37 @@ def _first_col(df: pd.DataFrame, names: list[str]) -> str | None:
     return None
 
 
-def _is_completed(pass_df: pd.DataFrame) -> pd.Series:
-    if "pass_outcome_name" not in pass_df.columns:
-        return pd.Series(True, index=pass_df.index)
-    outcome = pass_df["pass_outcome_name"].astype("string").str.strip().str.lower()
-    return outcome.isna() | (outcome == "") | (outcome == "none")
+def resolve_pass_columns(df: pd.DataFrame) -> dict[str, str | None]:
+    return {
+        "height_name_col": _first_col(df, PASS_HEIGHT_CANDIDATES),
+        "height_id_col": _first_col(df, PASS_HEIGHT_ID_CANDIDATES),
+        "cross_col": _first_col(df, PASS_CROSS_CANDIDATES),
+        "outcome_name_col": _first_col(df, PASS_OUTCOME_NAME_CANDIDATES),
+        "outcome_id_col": _first_col(df, PASS_OUTCOME_ID_CANDIDATES),
+    }
 
 
-def _normalize_height(pass_df: pd.DataFrame) -> pd.Series:
-    if "pass_height_name" not in pass_df.columns:
+def _is_completed(pass_df: pd.DataFrame, columns: dict[str, str | None]) -> pd.Series:
+    outcome_name_col = columns.get("outcome_name_col")
+    if outcome_name_col and outcome_name_col in pass_df.columns:
+        outcome = pass_df[outcome_name_col].astype("string").str.strip().str.lower()
+        return outcome.isna() | (outcome == "") | (outcome == "none")
+    return pd.Series(True, index=pass_df.index)
+
+
+def _normalize_height(pass_df: pd.DataFrame, columns: dict[str, str | None]) -> pd.Series:
+    height_col = columns.get("height_name_col")
+    if not height_col or height_col not in pass_df.columns:
         return pd.Series("unknown", index=pass_df.index, dtype="string")
-    normalized = pass_df["pass_height_name"].astype("string").str.strip().str.lower()
-    normalized = normalized.fillna("unknown").replace("", "unknown")
-    return normalized
+    normalized = pass_df[height_col].astype("string").str.strip().str.lower()
+    return normalized.fillna("unknown").replace("", "unknown")
 
 
-def _cross_mask(pass_df: pd.DataFrame) -> pd.Series:
-    if "pass_cross" not in pass_df.columns:
+def _cross_mask(pass_df: pd.DataFrame, columns: dict[str, str | None]) -> pd.Series:
+    cross_col = columns.get("cross_col")
+    if not cross_col or cross_col not in pass_df.columns:
         return pd.Series(False, index=pass_df.index)
-    col = pass_df["pass_cross"]
+    col = pass_df[cross_col]
     if str(col.dtype).lower() in {"bool", "boolean"}:
         return col.fillna(False).astype(bool)
     text = col.astype("string").str.strip().str.lower()
@@ -77,9 +98,7 @@ def _final_third_mask(pass_df: pd.DataFrame, is_home: bool) -> pd.Series:
     pitch_len = 120.0 if float(end_long.max()) > 101.0 else 100.0
     high_threshold = (2.0 / 3.0) * pitch_len
     low_threshold = (1.0 / 3.0) * pitch_len
-    if is_home:
-        return end_long >= high_threshold
-    return end_long <= low_threshold
+    return end_long >= high_threshold if is_home else end_long <= low_threshold
 
 
 def get_pass_events(
@@ -94,9 +113,10 @@ def get_pass_events(
     pass_df = base[base["type_name"].astype("string").str.strip().str.lower() == "pass"].copy()
     if pass_df.empty:
         return pass_df
-    pass_df["is_completed"] = _is_completed(pass_df)
-    pass_df["pass_height_norm"] = _normalize_height(pass_df)
-    pass_df["is_cross"] = _cross_mask(pass_df)
+    colmap = resolve_pass_columns(pass_df)
+    pass_df["is_completed"] = _is_completed(pass_df, colmap)
+    pass_df["pass_height_norm"] = _normalize_height(pass_df, colmap)
+    pass_df["is_cross"] = _cross_mask(pass_df, colmap)
     return pass_df
 
 
@@ -111,17 +131,13 @@ def filter_passes(
     if work.empty:
         return work
 
+    colmap = resolve_pass_columns(work)
     if "pass_height_norm" not in work.columns:
-        work["pass_height_norm"] = _normalize_height(work)
+        work["pass_height_norm"] = _normalize_height(work, colmap)
     if "is_cross" not in work.columns:
-        work["is_cross"] = _cross_mask(work)
+        work["is_cross"] = _cross_mask(work, colmap)
 
-    height_lookup = {
-        "Ground": "ground pass",
-        "Low": "low pass",
-        "High": "high pass",
-    }
-    target_height = height_lookup.get(pass_height_filter)
+    target_height = {"Ground": "ground pass", "Low": "low pass", "High": "high pass"}.get(pass_height_filter)
     if target_height is not None:
         work = work[work["pass_height_norm"] == target_height]
 
@@ -135,26 +151,36 @@ def filter_passes(
     return work
 
 
-def compute_pass_stats(pass_df: pd.DataFrame, is_home: bool) -> dict[str, float]:
+def _missing_breakdown_fields(pass_df: pd.DataFrame) -> bool:
+    colmap = resolve_pass_columns(pass_df)
+    return colmap.get("height_name_col") is None or colmap.get("cross_col") is None
+
+
+def _na_stats() -> dict[str, float | None]:
+    return {
+        "total_passes": 0,
+        "completed_passes": 0,
+        "completion_pct": 0.0,
+        "progressive_passes": 0,
+        "final_third_passes": 0,
+        "ground_passes": None,
+        "low_passes": None,
+        "high_passes": None,
+        "crosses": None,
+        "cross_completion_pct": None,
+    }
+
+
+def compute_pass_stats(pass_df: pd.DataFrame, is_home: bool) -> dict[str, float | None]:
     if pass_df.empty:
-        return {
-            "total_passes": 0,
-            "completed_passes": 0,
-            "completion_pct": 0.0,
-            "progressive_passes": 0,
-            "final_third_passes": 0,
-            "ground_passes": 0,
-            "low_passes": 0,
-            "high_passes": 0,
-            "crosses": 0,
-            "cross_completion_pct": 0.0,
-        }
+        return _na_stats()
 
     work = pass_df.copy()
+    colmap = resolve_pass_columns(work)
     if "pass_height_norm" not in work.columns:
-        work["pass_height_norm"] = _normalize_height(work)
+        work["pass_height_norm"] = _normalize_height(work, colmap)
     if "is_cross" not in work.columns:
-        work["is_cross"] = _cross_mask(work)
+        work["is_cross"] = _cross_mask(work, colmap)
 
     start_long_col, end_long_col = _pass_longitudinal_cols(work)
     progressive = 0
@@ -168,6 +194,16 @@ def compute_pass_stats(pass_df: pd.DataFrame, is_home: bool) -> dict[str, float]
     completed = int(work["is_completed"].sum()) if "is_completed" in work.columns else 0
     completion_pct = (completed / total * 100.0) if total else 0.0
     final_third = int(_final_third_mask(work, is_home=is_home).sum())
+
+    if _missing_breakdown_fields(work):
+        stats = _na_stats()
+        stats["total_passes"] = total
+        stats["completed_passes"] = completed
+        stats["completion_pct"] = completion_pct
+        stats["progressive_passes"] = progressive
+        stats["final_third_passes"] = final_third
+        return stats
+
     ground = int((work["pass_height_norm"] == "ground pass").sum())
     low = int((work["pass_height_norm"] == "low pass").sum())
     high = int((work["pass_height_norm"] == "high pass").sum())
@@ -222,14 +258,7 @@ def _line_trace(df: pd.DataFrame, sx_col: str, sy_col: str, ex_col: str, ey_col:
     return go.Scattergl(x=x_values, y=y_values, mode="lines", line=dict(width=1.4, color=color), name=name, opacity=0.62)
 
 
-def _endpoint_markers(
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    color: str,
-    size: float,
-    opacity: float,
-) -> go.Scattergl:
+def _endpoint_markers(df: pd.DataFrame, x_col: str, y_col: str, color: str, size: float, opacity: float) -> go.Scattergl:
     x_values = pd.to_numeric(df[x_col], errors="coerce")
     y_values = pd.to_numeric(df[y_col], errors="coerce")
     keep = x_values.notna() & y_values.notna()
@@ -301,7 +330,13 @@ def render_pass_map(pass_df: pd.DataFrame, title: str, max_lines: int = 1100) ->
     return fig
 
 
-def render_pass_comparison_panel(home_stats: dict[str, float], away_stats: dict[str, float], home_name: str, away_name: str) -> None:
+def _fmt_metric(value: float | None, is_pct: bool = False) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.1f}%" if is_pct else str(int(value))
+
+
+def render_pass_comparison_panel(home_stats: dict[str, float | None], away_stats: dict[str, float | None], home_name: str, away_name: str) -> None:
     rows = [
         ("Total Passes", home_stats["total_passes"], away_stats["total_passes"], False),
         ("Completed Passes", home_stats["completed_passes"], away_stats["completed_passes"], False),
@@ -317,27 +352,18 @@ def render_pass_comparison_panel(home_stats: dict[str, float], away_stats: dict[
     html = ['<div class="match-stats-panel">']
     html.append(f'<div class="match-stats-context">{home_name} vs {away_name}</div>')
     for label, hv, av, is_pct in rows:
-        left = f"{hv:.1f}%" if is_pct else str(int(hv))
-        right = f"{av:.1f}%" if is_pct else str(int(av))
         html.append(
-            "<div class='match-stats-row'>"
-            "<div class='match-stats-values'>"
-            f"<div class='home'>{left}</div>"
+            "<div class='match-stats-row'><div class='match-stats-values'>"
+            f"<div class='home'>{_fmt_metric(hv, is_pct=is_pct)}</div>"
             f"<div class='label'>{label}</div>"
-            f"<div class='away'>{right}</div>"
-            "</div>"
-            "</div>"
+            f"<div class='away'>{_fmt_metric(av, is_pct=is_pct)}</div>"
+            "</div></div>"
         )
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
-def _team_subset(
-    pass_df: pd.DataFrame,
-    team_id: int,
-    selected_team_id: int | None,
-    selected_player_id: int | None,
-) -> pd.DataFrame:
+def _team_subset(pass_df: pd.DataFrame, team_id: int, selected_team_id: int | None, selected_player_id: int | None) -> pd.DataFrame:
     work = pass_df.copy()
     if work.empty:
         return work
@@ -350,26 +376,38 @@ def _team_subset(
     return work
 
 
-def _debug_pass_validation(pass_df: pd.DataFrame) -> None:
-    if pass_df.empty:
-        st.caption("Pass debug: no pass events in current context.")
-        return
-    height_values = (
-        pass_df["pass_height_name"].astype("string").dropna().str.strip().drop_duplicates().sort_values().tolist()
-        if "pass_height_name" in pass_df.columns
-        else []
-    )
-    if "is_cross" in pass_df.columns:
-        cross_true = int(pass_df["is_cross"].sum())
-        cross_false = int((~pass_df["is_cross"]).sum())
-    else:
-        cross_true = 0
-        cross_false = int(len(pass_df))
-    st.caption(
-        "Pass debug | "
-        f"pass_height_name values: {height_values if height_values else 'unavailable'} | "
-        f"crosses: {cross_true}, non-crosses: {cross_false}"
-    )
+def _debug_enabled() -> bool:
+    session_debug = bool(st.session_state.get("debug")) or bool(st.session_state.get("debug_passes"))
+    query_debug = False
+    try:
+        qv = st.query_params.get("debug", "")
+        query_debug = str(qv).strip().lower() in {"1", "true", "yes", "y", "on"}
+    except Exception:
+        query_debug = False
+    return session_debug or query_debug
+
+
+def _render_debug_expander(events_for_match: pd.DataFrame, pass_df: pd.DataFrame) -> None:
+    subset = [c for c in events_for_match.columns if any(k in c.lower() for k in ["pass_height", "pass_cross", "cross", "pass_outcome"])]
+    with st.expander("Pass Debug", expanded=False):
+        st.write("Candidate columns:", subset)
+        colmap = resolve_pass_columns(events_for_match)
+        st.write("Resolved mapping:", colmap)
+        if colmap.get("height_name_col") and colmap["height_name_col"] in pass_df.columns:
+            vals = (
+                pass_df[colmap["height_name_col"]]
+                .astype("string")
+                .dropna()
+                .str.strip()
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            st.write("Height unique values:", vals)
+        cross_col = colmap.get("cross_col")
+        if cross_col and cross_col in pass_df.columns:
+            mask = _cross_mask(pass_df, colmap)
+            st.write("Cross distribution:", {"true": int(mask.sum()), "false": int((~mask).sum())})
 
 
 def render_passes_section(
@@ -382,22 +420,26 @@ def render_passes_section(
     selected_player_id: int | None,
     events: pd.DataFrame,
 ) -> None:
-    pass_df = get_pass_events(match_id=match_id, team_id=None, player_id=None, events=events)
+    events_for_match = get_filtered_events(match_id=match_id, events=events)
+    pass_df = get_pass_events(match_id=match_id, team_id=None, player_id=None, events=events_for_match)
     if home_team_id is None or away_team_id is None:
         st.info("Home/Away team metadata is unavailable for this match.")
         return
+
+    colmap = resolve_pass_columns(pass_df if not pass_df.empty else events_for_match)
+    missing_breakdown = colmap.get("height_name_col") is None or colmap.get("cross_col") is None
+    if missing_breakdown:
+        st.warning(
+            "Pass height/cross fields are missing from fact_events export. "
+            "Re-run ETL + export_star_schema to include them."
+        )
 
     home_passes = _team_subset(pass_df, team_id=int(home_team_id), selected_team_id=selected_team_id, selected_player_id=selected_player_id)
     away_passes = _team_subset(pass_df, team_id=int(away_team_id), selected_team_id=selected_team_id, selected_player_id=selected_player_id)
 
     f1, f2 = st.columns(2)
     with f1:
-        height_filter = st.selectbox(
-            "Pass Height Filter",
-            options=["All", "Ground", "Low", "High"],
-            index=0,
-            key="passes_height_filter",
-        )
+        height_filter = st.selectbox("Pass Height Filter", options=["All", "Ground", "Low", "High"], index=0, key="passes_height_filter")
     with f2:
         cross_filter = st.selectbox(
             "Cross Filter",
@@ -410,9 +452,12 @@ def render_passes_section(
     filtered_away = filter_passes(away_passes, pass_height_filter=height_filter, cross_filter=cross_filter, final_third_only=False, is_home=False)
 
     st.markdown('<div class="section-title">Pass Comparison Stats</div>', unsafe_allow_html=True)
-    home_stats = compute_pass_stats(filtered_home, is_home=True)
-    away_stats = compute_pass_stats(filtered_away, is_home=False)
-    render_pass_comparison_panel(home_stats, away_stats, home_team_name, away_team_name)
+    render_pass_comparison_panel(
+        compute_pass_stats(filtered_home, is_home=True),
+        compute_pass_stats(filtered_away, is_home=False),
+        home_team_name,
+        away_team_name,
+    )
 
     st.markdown('<div class="section-title">Home vs Away Pass Maps</div>', unsafe_allow_html=True)
     c_home, c_away = st.columns(2)
@@ -424,23 +469,11 @@ def render_passes_section(
     st.markdown('<div class="section-title">Passes into Final Third</div>', unsafe_allow_html=True)
     ft_home, ft_away = st.columns(2)
     with ft_home:
-        final_home = filter_passes(
-            home_passes,
-            pass_height_filter=height_filter,
-            cross_filter=cross_filter,
-            final_third_only=True,
-            is_home=True,
-        )
+        final_home = filter_passes(home_passes, pass_height_filter=height_filter, cross_filter=cross_filter, final_third_only=True, is_home=True)
         st.plotly_chart(render_pass_map(final_home, title="Home Final Third Passes"), use_container_width=True)
     with ft_away:
-        final_away = filter_passes(
-            away_passes,
-            pass_height_filter=height_filter,
-            cross_filter=cross_filter,
-            final_third_only=True,
-            is_home=False,
-        )
+        final_away = filter_passes(away_passes, pass_height_filter=height_filter, cross_filter=cross_filter, final_third_only=True, is_home=False)
         st.plotly_chart(render_pass_map(final_away, title="Away Final Third Passes"), use_container_width=True)
 
-    if bool(st.session_state.get("debug_passes")):
-        _debug_pass_validation(pass_df)
+    if _debug_enabled():
+        _render_debug_expander(events_for_match, pass_df)
