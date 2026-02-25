@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import streamlit as st
 
-ANALYSIS_VIEWS = ("Stats", "Shots", "Passes", "Duels / Recoveries", "More")
+ANALYSIS_VIEWS = (
+    "Stats",
+    "Offensive",
+    "Defensive",
+    "Transitions",
+    "Set Pieces",
+    "Shots",
+    "Passes",
+    "Duels / Recoveries",
+)
 
 
 def render_analysis_nav(current_view: str = "Stats") -> str:

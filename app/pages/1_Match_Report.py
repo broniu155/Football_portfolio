@@ -14,7 +14,15 @@ if str(APP_ROOT) not in sys.path:
 
 try:
     from app.components.analysis_navigation import render_analysis_nav
-    from app.components.data import get_lineup_events, get_lineup_players, get_shots, load_dimensions
+    from app.components.data import (
+        get_active_data_mode,
+        get_lineup_events,
+        get_lineup_players,
+        get_shots,
+        load_dimensions,
+        load_match_events,
+    )
+    from app.components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
     from app.components.filters import top_filters_cascading
     from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
     from app.components.match_stats import (
@@ -29,7 +37,15 @@ try:
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
 except (ModuleNotFoundError, KeyError):
     from components.analysis_navigation import render_analysis_nav
-    from components.data import get_lineup_events, get_lineup_players, get_shots, load_dimensions
+    from components.data import (
+        get_active_data_mode,
+        get_lineup_events,
+        get_lineup_players,
+        get_shots,
+        load_dimensions,
+        load_match_events,
+    )
+    from components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
     from components.filters import top_filters_cascading
     from components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
     from components.match_stats import (
@@ -44,6 +60,38 @@ except (ModuleNotFoundError, KeyError):
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
 
 setup_page(page_title="Match Report", page_icon=":bar_chart:")
+
+MATCH_EVENT_COLUMNS = [
+    "event_id",
+    "match_id",
+    "team_id",
+    "player_id",
+    "type_id",
+    "type_name",
+    "period",
+    "minute",
+    "second",
+    "timestamp",
+    "event_index",
+    "location_x",
+    "location_y",
+    "pass_end_location_x",
+    "pass_end_location_y",
+    "carry_end_location_x",
+    "carry_end_location_y",
+    "under_pressure",
+    "counterpress",
+    "play_pattern_name",
+    "pass_height",
+    "pass_height_name",
+    "pass_cross",
+    "pass_outcome",
+    "pass_outcome_name",
+    "duel_outcome_name",
+    "duel_outcome",
+    "team_name",
+    "player_name",
+]
 
 
 def _apply_team_player_filters(df: pd.DataFrame, team_id: int | None, player_id: int | None) -> pd.DataFrame:
@@ -372,6 +420,207 @@ def _render_duels_section(match_id: int, team_id: int | None, player_id: int | N
     )
 
 
+def _event_type_mask(df: pd.DataFrame, event_type: str) -> pd.Series:
+    if "type_name" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["type_name"].astype("string").str.strip().str.lower().eq(event_type.strip().lower())
+
+
+def _duel_won_mask(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+    is_duel = _event_type_mask(df, "Duel") | _event_type_mask(df, "50/50")
+    outcome = (
+        df["duel_outcome_name"]
+        if "duel_outcome_name" in df.columns
+        else df["duel_outcome"]
+        if "duel_outcome" in df.columns
+        else pd.Series(pd.NA, index=df.index, dtype="string")
+    )
+    won = outcome.astype("string").str.strip().str.lower().isin({"won", "win", "success", "success in play", "success out"})
+    return is_duel & won.fillna(False)
+
+
+def _pass_completion_mask(df: pd.DataFrame) -> pd.Series:
+    outcome = (
+        df["pass_outcome"]
+        if "pass_outcome" in df.columns
+        else df["pass_outcome_name"]
+        if "pass_outcome_name" in df.columns
+        else pd.Series(pd.NA, index=df.index, dtype="string")
+    )
+    norm = outcome.astype("string").str.strip().str.lower()
+    return norm.isna() | norm.eq("") | norm.eq("none")
+
+
+def _progressive_pass_mask(df: pd.DataFrame) -> pd.Series:
+    if not {"location_x", "pass_end_location_x"}.issubset(df.columns):
+        return pd.Series(False, index=df.index)
+    start_x = pd.to_numeric(df["location_x"], errors="coerce")
+    end_x = pd.to_numeric(df["pass_end_location_x"], errors="coerce")
+    return (end_x - start_x).ge(15).fillna(False)
+
+
+def _final_third_pass_mask(df: pd.DataFrame) -> pd.Series:
+    if "pass_end_location_x" not in df.columns:
+        return pd.Series(False, index=df.index)
+    end_x = pd.to_numeric(df["pass_end_location_x"], errors="coerce")
+    if end_x.dropna().empty:
+        return pd.Series(False, index=df.index)
+    threshold = 80.0 if float(end_x.max()) > 101.0 else (2.0 / 3.0) * 100.0
+    return end_x.ge(threshold).fillna(False)
+
+
+def _render_bucket_debug(events: pd.DataFrame, team_id: int | None, player_id: int | None) -> None:
+    with st.expander("Developer tools", expanded=False):
+        show_debug = st.checkbox(
+            "Show event bucket counts (debug)",
+            value=False,
+            help="Developer-only debug table for bucket classification counts in current filter context.",
+        )
+        if not show_debug:
+            return
+        scoped = _apply_team_player_filters(events, team_id=team_id, player_id=player_id)
+        if "bucket" not in scoped.columns or scoped.empty:
+            st.info("No bucket data available.")
+            return
+        counts = scoped["bucket"].astype("string").value_counts(dropna=False).rename_axis("bucket").reset_index(name="count")
+        st.dataframe(counts, use_container_width=True, hide_index=True)
+
+
+def _render_offensive_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">Offensive - Chance Creation & Progression</div>', unsafe_allow_html=True)
+    st.caption("Plain-language view of how your team progressed the ball and created chances.")
+    if events.empty:
+        st.info("No offensive events in current context.")
+        return
+
+    offensive = events[events["bucket"].astype("string") == "OFFENSIVE"] if "bucket" in events.columns else events.copy()
+    pass_events = offensive[_event_type_mask(offensive, "Pass")]
+    dribbles = offensive[_event_type_mask(offensive, "Dribble")]
+    shots = shots_df.copy()
+
+    completed = int(_pass_completion_mask(pass_events).sum()) if not pass_events.empty else 0
+    progressive = int(_progressive_pass_mask(pass_events).sum()) if not pass_events.empty else 0
+    final_third = int(_final_third_pass_mask(pass_events).sum()) if not pass_events.empty else 0
+    dribble_success = int(_duel_won_mask(dribbles).sum()) if not dribbles.empty else 0
+    xg_total = float(pd.to_numeric(shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in shots.columns else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total passes", int(len(pass_events)))
+    k2.metric("Completed passes", completed)
+    k3.metric("Progressive passes", progressive)
+    k4.metric("Passes to final third", final_third)
+
+    k5, k6, k7, k8 = st.columns(4)
+    k5.metric("Dribbles attempted", int(len(dribbles)))
+    k6.metric("Dribbles success", dribble_success)
+    k7.metric("Shots", int(len(shots)))
+    k8.metric("xG", f"{xg_total:.2f}")
+
+    if {"minute", "type_name", "team_name", "player_name"}.issubset(offensive.columns):
+        cols = ["minute", "type_name", "team_name", "player_name"]
+        st.dataframe(offensive[cols].sort_values("minute").head(30), use_container_width=True, hide_index=True)
+
+
+def _render_defensive_panel(events: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">Defensive - Regains & Disruption</div>', unsafe_allow_html=True)
+    st.caption("Tracks how often your team disrupted attacks and recovered possession.")
+    if events.empty:
+        st.info("No defensive events in current context.")
+        return
+
+    defensive = events[events["bucket"].astype("string") == "DEFENSIVE"] if "bucket" in events.columns else events.copy()
+    pressures = int(_event_type_mask(defensive, "Pressure").sum())
+    counterpress = int(defensive["is_counterpress"].sum()) if "is_counterpress" in defensive.columns else 0
+    interceptions = int(_event_type_mask(defensive, "Interception").sum())
+    recoveries = int(_event_type_mask(defensive, "Ball Recovery").sum())
+    duels_won = int(_duel_won_mask(defensive).sum())
+    blocks = int(_event_type_mask(defensive, "Block").sum())
+    clearances = int(_event_type_mask(defensive, "Clearance").sum())
+    fouls = int(_event_type_mask(defensive, "Foul Committed").sum())
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Pressures", pressures)
+    k2.metric("Counterpress actions", counterpress)
+    k3.metric("Interceptions", interceptions)
+    k4.metric("Ball recoveries", recoveries)
+
+    k5, k6, k7, k8 = st.columns(4)
+    k5.metric("Duels won", duels_won)
+    k6.metric("Blocks", blocks)
+    k7.metric("Clearances", clearances)
+    k8.metric("Fouls committed", fouls)
+
+
+def _render_transitions_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">Transitions - Turnovers & Counterpress</div>', unsafe_allow_html=True)
+    st.caption("Shows what happens immediately after possession changes.")
+    if events.empty:
+        st.info("No transition events in current context.")
+        return
+
+    transition = events[events["bucket"].astype("string") == "TRANSITION"] if "bucket" in events.columns else events.copy()
+    turnovers = int(transition["is_turnover"].sum()) if "is_turnover" in transition.columns else 0
+    counterpress = int(transition["is_counterpress"].sum()) if "is_counterpress" in transition.columns else 0
+    counter_regains = int(transition["is_counterpress_regain"].sum()) if "is_counterpress_regain" in transition.columns else 0
+    counters = int(transition["is_counter"].sum()) if "is_counter" in transition.columns else 0
+
+    shots_counter = pd.DataFrame()
+    if "play_pattern_name" in shots_df.columns:
+        shots_counter = shots_df[
+            shots_df["play_pattern_name"].astype("string").str.strip().str.lower().eq("from counter")
+        ].copy()
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Turnovers", turnovers)
+    k2.metric("Counterpress", counterpress)
+    k3.metric("Regains in 6s", counter_regains)
+    k4.metric("Counters", counters)
+    k5.metric("Shots from counters", int(len(shots_counter)))
+
+    if {"minute", "type_name", "is_turnover", "is_counterpress_regain"}.issubset(transition.columns):
+        cols = ["minute", "type_name", "is_turnover", "is_counterpress_regain"]
+        st.dataframe(transition[cols].sort_values("minute").head(30), use_container_width=True, hide_index=True)
+
+
+def _render_set_piece_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+    st.markdown('<div class="section-title">Set Pieces</div>', unsafe_allow_html=True)
+    st.caption("Set-piece view for corners, free kicks, throw-ins, goal kicks, and kick-offs.")
+    if events.empty:
+        st.info("No set-piece events in current context.")
+        return
+
+    set_piece_events = events[events["bucket"].astype("string") == "SET_PIECE"] if "bucket" in events.columns else events.copy()
+    set_piece_passes = int(_event_type_mask(set_piece_events, "Pass").sum())
+    set_piece_shots = shots_df[
+        shots_df["play_pattern_name"].astype("string").str.strip().str.lower().isin(SET_PIECE_PATTERNS)
+    ] if "play_pattern_name" in shots_df.columns else shots_df.iloc[0:0].copy()
+    set_piece_goals = (
+        int(set_piece_shots["shot_outcome"].astype("string").str.strip().str.lower().eq("goal").sum())
+        if "shot_outcome" in set_piece_shots.columns
+        else 0
+    )
+    set_piece_xg = float(pd.to_numeric(set_piece_shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in set_piece_shots.columns else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Set-piece passes", set_piece_passes)
+    k2.metric("Set-piece shots", int(len(set_piece_shots)))
+    k3.metric("Set-piece xG", f"{set_piece_xg:.2f}")
+    k4.metric("Set-piece goals", set_piece_goals)
+
+    if "play_pattern_name" in set_piece_events.columns:
+        breakdown = (
+            set_piece_events["play_pattern_name"]
+            .astype("string")
+            .value_counts()
+            .rename_axis("set_piece_type")
+            .reset_index(name="events")
+            .head(12)
+        )
+        st.dataframe(breakdown, use_container_width=True, hide_index=True)
+
+
 def _render_more_section() -> None:
     st.markdown('<div class="section-title">More</div>', unsafe_allow_html=True)
     st.markdown(
@@ -398,7 +647,10 @@ if match_id is None:
 
 st.caption(selection["match_label"] or "")
 with st.spinner("Loading match context..."):
-    match_events = get_filtered_events(match_id=int(match_id), events=None)
+    active_data_mode = get_active_data_mode()
+    match_events = load_match_events(match_id=int(match_id), data_mode=active_data_mode, columns=MATCH_EVENT_COLUMNS)
+    match_events = derive_event_labels(match_events)
+    match_events = derive_counterpress_regains(match_events, window_seconds=6.0)
     match_shots = get_shots(match_id=match_id)
 
 official_stats = compute_match_stats(
@@ -411,6 +663,7 @@ _render_score_header(official_stats)
 
 analysis_view = render_analysis_nav(current_view=str(st.session_state.get("analysis_view", "Stats")))
 _render_context_chips(selection)
+_render_bucket_debug(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
 
 if analysis_view == "Stats":
     _render_stats_section(
@@ -456,5 +709,23 @@ elif analysis_view == "Duels / Recoveries":
         player_id=selection["player_id"],
         match_events=match_events,
     )
+elif analysis_view == "Offensive":
+    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
+    filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
+    offensive_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
+    _render_offensive_panel(filtered_events, offensive_shots)
+elif analysis_view == "Defensive":
+    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
+    _render_defensive_panel(filtered_events)
+elif analysis_view == "Transitions":
+    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
+    filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
+    transition_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
+    _render_transitions_panel(filtered_events, transition_shots)
+elif analysis_view == "Set Pieces":
+    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
+    filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
+    set_piece_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
+    _render_set_piece_panel(filtered_events, set_piece_shots)
 else:
     _render_more_section()

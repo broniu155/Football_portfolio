@@ -727,6 +727,35 @@ def get_events(match_id: int, team_id: int | None = None, player_id: int | None 
     return _query_fact_rows(table_paths["fact_events"], match_id=match_id, team_id=team_id, player_id=player_id)
 
 
+@st.cache_data(show_spinner=False, ttl=600, max_entries=64)
+def _load_match_events_cached(
+    match_id: int,
+    fact_events_path: str,
+    data_mode: str,
+    columns_key: tuple[str, ...] | None,
+) -> pd.DataFrame:
+    del data_mode  # cache key partition by mode
+    selected = list(columns_key) if columns_key else None
+    return _query_fact_rows(Path(fact_events_path), match_id=int(match_id), selected_columns=selected)
+
+
+def load_match_events(match_id: int, data_mode: str, columns: list[str] | None = None) -> pd.DataFrame:
+    mode = str(data_mode).strip().lower()
+    if mode not in VALID_MODES:
+        mode = _active_mode_from_state()
+    base_dir = _resolve_data_dir(mode)
+    fact_events_path = _resolve_table_file(base_dir, "fact_events")
+    if fact_events_path is None:
+        return pd.DataFrame()
+    columns_key = tuple(columns) if columns else None
+    return _load_match_events_cached(
+        match_id=int(match_id),
+        fact_events_path=str(fact_events_path),
+        data_mode=mode,
+        columns_key=columns_key,
+    )
+
+
 def get_active_data_mode() -> str:
     return _active_mode_from_state()
 

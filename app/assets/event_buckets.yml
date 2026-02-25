@@ -1,0 +1,23 @@
+offensive:
+  - Pass
+  - Carry
+  - Dribble
+  - Shot
+  - Ball Receipt
+
+defensive:
+  - Pressure
+  - Interception
+  - Block
+  - Clearance
+  - Duel
+  - 50/50
+  - Foul Committed
+  - Ball Recovery
+  - Dribbled Past
+  - Goal Keeper
+
+transition:
+  - Miscontrol
+  - Dispossessed
+  - Error
