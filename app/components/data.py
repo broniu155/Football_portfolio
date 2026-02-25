@@ -756,6 +756,75 @@ def load_match_events(match_id: int, data_mode: str, columns: list[str] | None =
     )
 
 
+@st.cache_data(show_spinner=False, ttl=600, max_entries=64)
+def _load_match_passes_cached(
+    match_id: int,
+    fact_events_path: str,
+    data_mode: str,
+    columns_key: tuple[str, ...] | None,
+) -> pd.DataFrame:
+    del data_mode  # cache key partition by mode
+    path = Path(fact_events_path)
+    available = set(_get_table_columns(str(path)))
+
+    requested = list(columns_key) if columns_key else []
+    default_projection = [
+        "match_id",
+        "team_id",
+        "team_name",
+        "player_id",
+        "player_name",
+        "type_name",
+        "location_x",
+        "location_y",
+        "pass_end_location_x",
+        "pass_end_location_y",
+        "pass_outcome_name",
+        "pass_outcome_id",
+        "minute",
+        "second",
+        "event_index",
+        "index",
+    ]
+    projection = [col for col in (requested or default_projection) if col in available]
+    if "match_id" not in available:
+        return pd.DataFrame(columns=projection if projection else default_projection)
+
+    relation = _scan_relation_sql(path)
+    where = [f"TRY_CAST(match_id AS BIGINT) = {int(match_id)}"]
+    if "type_name" in available:
+        where.append("LOWER(TRIM(COALESCE(type_name, ''))) = 'pass'")
+    else:
+        pass_cols = {"pass_end_location_x", "pass_end_location_y", "pass_outcome_name", "pass_outcome_id"}
+        if not (pass_cols & available):
+            return pd.DataFrame(columns=projection if projection else default_projection)
+
+    if projection:
+        select_clause = ", ".join(_quote_identifier(column) for column in projection)
+    else:
+        select_clause = "*"
+    sql = f"SELECT {select_clause} FROM {relation} WHERE {' AND '.join(where)}"
+    conn = _get_duckdb_connection(str(path.parent.resolve()))
+    return conn.execute(sql).df()
+
+
+def load_match_passes(match_id: int, data_mode: str, columns: list[str] | None = None) -> pd.DataFrame:
+    mode = str(data_mode).strip().lower()
+    if mode not in VALID_MODES:
+        mode = _active_mode_from_state()
+    base_dir = _resolve_data_dir(mode)
+    fact_events_path = _resolve_table_file(base_dir, "fact_events")
+    if fact_events_path is None:
+        return pd.DataFrame()
+    columns_key = tuple(columns) if columns else None
+    return _load_match_passes_cached(
+        match_id=int(match_id),
+        fact_events_path=str(fact_events_path),
+        data_mode=mode,
+        columns_key=columns_key,
+    )
+
+
 def get_active_data_mode() -> str:
     return _active_mode_from_state()
 

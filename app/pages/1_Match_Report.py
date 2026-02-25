@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,8 +22,10 @@ try:
         get_shots,
         load_dimensions,
         load_match_events,
+        load_match_passes,
     )
     from app.components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
+    from app.components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
     from app.components.filters import top_filters_cascading
     from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
     from app.components.match_stats import (
@@ -33,6 +36,7 @@ try:
     )
     from app.components.model_views import get_shots_view
     from app.components.passes import get_filtered_events, render_passes_section
+    from app.components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from app.components.ui import setup_page
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
 except (ModuleNotFoundError, KeyError):
@@ -44,8 +48,10 @@ except (ModuleNotFoundError, KeyError):
         get_shots,
         load_dimensions,
         load_match_events,
+        load_match_passes,
     )
     from components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
+    from components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
     from components.filters import top_filters_cascading
     from components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
     from components.match_stats import (
@@ -56,6 +62,7 @@ except (ModuleNotFoundError, KeyError):
     )
     from components.model_views import get_shots_view
     from components.passes import get_filtered_events, render_passes_section
+    from components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from components.ui import setup_page
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
 
@@ -93,6 +100,79 @@ MATCH_EVENT_COLUMNS = [
     "player_name",
 ]
 
+MATCH_PASS_COLUMNS = [
+    "match_id",
+    "team_id",
+    "team_name",
+    "player_id",
+    "player_name",
+    "type_name",
+    "location_x",
+    "location_y",
+    "pass_end_location_x",
+    "pass_end_location_y",
+    "pass_outcome_name",
+    "pass_outcome_id",
+    "minute",
+    "second",
+    "event_index",
+    "index",
+]
+
+EXPORT_HINT_COLUMNS = [
+    "event_id",
+    "match_id",
+    "event_index",
+    "index",
+    "period",
+    "timestamp",
+    "minute",
+    "second",
+    "team_id",
+    "team_name",
+    "player_id",
+    "player_name",
+    "position_name",
+    "type_id",
+    "type_name",
+    "sub_type",
+    "play_pattern_name",
+    "possession",
+    "possession_team_name",
+    "location_x",
+    "location_y",
+    "shot_outcome_name",
+    "shot_outcome_id",
+    "shot_type_name",
+    "shot_type_id",
+    "shot_body_part_name",
+    "shot_body_part_id",
+    "shot_end_location_x",
+    "shot_end_location_y",
+    "shot_end_location_z",
+    "shot_statsbomb_xg",
+    "pass_outcome_name",
+    "pass_outcome_id",
+    "pass_height_name",
+    "pass_height_id",
+    "pass_cross",
+    "pass_length",
+    "pass_angle",
+    "pass_end_location_x",
+    "pass_end_location_y",
+    "pass_recipient_name",
+    "pass_recipient_id",
+    "assisted_shot_id",
+    "duel_type_name",
+    "duel_type_id",
+    "duel_outcome_name",
+    "duel_outcome_id",
+    "foul_committed",
+    "foul_won",
+    "card_name",
+    "offside",
+]
+
 
 def _apply_team_player_filters(df: pd.DataFrame, team_id: int | None, player_id: int | None) -> pd.DataFrame:
     out = df.copy()
@@ -101,6 +181,26 @@ def _apply_team_player_filters(df: pd.DataFrame, team_id: int | None, player_id:
     if player_id is not None and "player_id" in out.columns:
         out = out[pd.to_numeric(out["player_id"], errors="coerce") == int(player_id)]
     return out
+
+
+@st.cache_data(show_spinner=False, ttl=600, max_entries=64)
+def _build_match_export_cached(
+    match_id: int,
+    data_mode: str,
+    include_derived: bool,
+    essential_only: bool,
+    apply_filters: bool,
+    team_id: int | None,
+    player_id: int | None,
+) -> tuple[pd.DataFrame, list[str]]:
+    raw = load_match_events(match_id=int(match_id), data_mode=data_mode, columns=None)
+    if raw.empty:
+        return raw.copy(), []
+    if apply_filters:
+        raw = _apply_team_player_filters(raw, team_id=team_id, player_id=player_id)
+    missing_hint_cols = [col for col in EXPORT_HINT_COLUMNS if col not in raw.columns]
+    export_df = build_match_events_export_df(raw, include_derived=include_derived, essential_only=essential_only)
+    return export_df, missing_hint_cols
 
 
 def _render_context_chips(selection: dict[str, object]) -> None:
@@ -298,6 +398,105 @@ def _render_stats_section(
             display_cols = [c for c in ("jersey_number", "player_name", "position_name") if c in away_tbl.columns]
             st.dataframe(away_tbl[display_cols].head(11), use_container_width=True, hide_index=True)
 
+    _render_match_export_panel(
+        match_id=match_id,
+        match_label=str(selection.get("match_label") or f"match_{match_id}"),
+        data_mode=get_active_data_mode(),
+        team_id=team_id,
+        player_id=player_id,
+    )
+
+
+def _render_match_export_panel(
+    match_id: int,
+    match_label: str,
+    data_mode: str,
+    team_id: int | None,
+    player_id: int | None,
+) -> None:
+    with st.expander("Debug / Export", expanded=False):
+        st.caption("Export match events from the active data source for validation and reconciliation.")
+        include_derived = st.checkbox(
+            "Include derived helper columns",
+            value=True,
+            help="Adds helper flags like pass_completed, progressive_pass, attack_channel, and shot_is_goal.",
+            key="export_include_derived",
+        )
+        essential_only = st.checkbox(
+            "Limit columns to essentials (smaller file)",
+            value=False,
+            help="Exports a compact validation-focused column set.",
+            key="export_essential_only",
+        )
+        apply_filters = st.checkbox(
+            "Apply current team/player filters",
+            value=False,
+            help="OFF exports all events for the selected match. ON applies current team/player filters.",
+            key="export_apply_filters",
+        )
+
+        params_sig = (
+            int(match_id),
+            str(data_mode),
+            bool(include_derived),
+            bool(essential_only),
+            bool(apply_filters),
+            int(team_id) if team_id is not None else None,
+            int(player_id) if player_id is not None else None,
+        )
+        if st.button("Generate CSV", key="export_generate_csv"):
+            with st.spinner("Generating match event CSV..."):
+                export_df, missing_cols = _build_match_export_cached(
+                    match_id=int(match_id),
+                    data_mode=str(data_mode),
+                    include_derived=bool(include_derived),
+                    essential_only=bool(essential_only),
+                    apply_filters=bool(apply_filters),
+                    team_id=team_id,
+                    player_id=player_id,
+                )
+                csv_bytes = events_df_to_csv_bytes(export_df)
+                safe_label = (
+                    match_label.replace(" ", "_")
+                    .replace("/", "-")
+                    .replace("\\", "-")
+                    .replace(":", "-")
+                    .replace("(", "")
+                    .replace(")", "")
+                )
+                st.session_state["match_export_state"] = {
+                    "params_sig": params_sig,
+                    "export_df": export_df,
+                    "missing_cols": missing_cols,
+                    "csv_bytes": csv_bytes,
+                    "file_name": f"match_events_{safe_label}.csv",
+                }
+
+        payload = st.session_state.get("match_export_state")
+        if not payload or payload.get("params_sig") != params_sig:
+            st.info("Click Generate CSV to create an export for the current options.")
+            return
+
+        export_df = payload.get("export_df", pd.DataFrame())
+        missing_cols = payload.get("missing_cols", [])
+        st.success(f"Ready: {len(export_df):,} rows x {len(export_df.columns):,} columns.")
+        if essential_only:
+            missing_essentials = [col for col in ESSENTIAL_COLUMNS if col not in export_df.columns]
+            if missing_essentials:
+                st.warning("Some essential columns are unavailable in this dataset: " + ", ".join(missing_essentials[:12]))
+        if missing_cols:
+            st.warning("Some optional validation columns are unavailable: " + ", ".join(missing_cols[:15]))
+
+        st.download_button(
+            "Download CSV",
+            data=payload.get("csv_bytes", b""),
+            file_name=str(payload.get("file_name", f"match_events_{match_id}.csv")),
+            mime="text/csv",
+            key="export_download_csv",
+        )
+        st.dataframe(export_df.head(50), use_container_width=True, hide_index=True)
+        st.caption("Preview: first 50 rows")
+
 
 def _render_shots_section(
     selection: dict[str, object],
@@ -441,26 +640,6 @@ def _duel_won_mask(df: pd.DataFrame) -> pd.Series:
     return is_duel & won.fillna(False)
 
 
-def _pass_completion_mask(df: pd.DataFrame) -> pd.Series:
-    outcome = (
-        df["pass_outcome"]
-        if "pass_outcome" in df.columns
-        else df["pass_outcome_name"]
-        if "pass_outcome_name" in df.columns
-        else pd.Series(pd.NA, index=df.index, dtype="string")
-    )
-    norm = outcome.astype("string").str.strip().str.lower()
-    return norm.isna() | norm.eq("") | norm.eq("none")
-
-
-def _progressive_pass_mask(df: pd.DataFrame) -> pd.Series:
-    if not {"location_x", "pass_end_location_x"}.issubset(df.columns):
-        return pd.Series(False, index=df.index)
-    start_x = pd.to_numeric(df["location_x"], errors="coerce")
-    end_x = pd.to_numeric(df["pass_end_location_x"], errors="coerce")
-    return (end_x - start_x).ge(15).fillna(False)
-
-
 def _final_third_pass_mask(df: pd.DataFrame) -> pd.Series:
     if "pass_end_location_x" not in df.columns:
         return pd.Series(False, index=df.index)
@@ -488,28 +667,114 @@ def _render_bucket_debug(events: pd.DataFrame, team_id: int | None, player_id: i
         st.dataframe(counts, use_container_width=True, hide_index=True)
 
 
-def _render_offensive_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+def _team_passes_subset(pass_df: pd.DataFrame, team_id: int | None) -> pd.DataFrame:
+    if team_id is None or "team_id" not in pass_df.columns:
+        return pass_df.iloc[0:0].copy() if team_id is not None else pass_df.copy()
+    return pass_df[pd.to_numeric(pass_df["team_id"], errors="coerce") == int(team_id)].copy()
+
+
+def _render_attack_distribution_chart(summary: dict[str, int], title: str) -> None:
+    left = int(summary.get("Left", 0))
+    centre = int(summary.get("Centre", 0))
+    right = int(summary.get("Right", 0))
+    total = max(1, left + centre + right)
+    fig = go.Figure()
+    fig.add_bar(y=[""], x=[left], name="Left", orientation="h", marker_color="#64748B", text=[f"{left/total:.0%}"])
+    fig.add_bar(y=[""], x=[centre], name="Centre", orientation="h", marker_color="#38BDF8", text=[f"{centre/total:.0%}"])
+    fig.add_bar(y=[""], x=[right], name="Right", orientation="h", marker_color="#94A3B8", text=[f"{right/total:.0%}"])
+    fig.update_layout(
+        title=title,
+        barmode="stack",
+        paper_bgcolor="#0b1220",
+        plot_bgcolor="#111a2b",
+        font=dict(color="#e7edf7"),
+        margin=dict(l=10, r=10, t=45, b=70),
+        height=220,
+        legend=dict(orientation="h", yanchor="top", y=-0.35, xanchor="left", x=0),
+    )
+    fig.update_xaxes(visible=False, showgrid=False, zeroline=False)
+    fig.update_yaxes(visible=False, showgrid=False, zeroline=False)
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"Left {left} | Centre {centre} | Right {right} ({left + centre + right} total)")
+
+
+def _build_passers_table(pass_df: pd.DataFrame, selected_player_id: int | None, top_n: int) -> pd.DataFrame:
+    top = top_progressive_passers(pass_df, top_n=top_n)
+    if top.empty:
+        return top
+    table = top.copy()
+    table["progressive_completion_pct"] = table["progressive_completion_pct"].map(lambda v: f"{float(v):.1f}%")
+    table["avg_progressive_gain"] = table["avg_progressive_gain"].map(lambda v: f"{float(v):.1f}m")
+    if selected_player_id is not None and "player_id" in table.columns:
+        is_selected = pd.to_numeric(table["player_id"], errors="coerce") == int(selected_player_id)
+        table["selected"] = is_selected.map(lambda v: "*" if bool(v) else "")
+    show_cols = [c for c in ("selected", "player_name", "successful_progressive", "progressive_completion_pct", "avg_progressive_gain") if c in table.columns]
+    return table[show_cols]
+
+
+def _render_offensive_panel(
+    events: pd.DataFrame,
+    shots_df: pd.DataFrame,
+    pass_df: pd.DataFrame,
+    home_team_id: int | None,
+    away_team_id: int | None,
+    home_team_name: str,
+    away_team_name: str,
+    selected_team_id: int | None,
+    selected_player_id: int | None,
+) -> None:
     st.markdown('<div class="section-title">Offensive - Chance Creation & Progression</div>', unsafe_allow_html=True)
-    st.caption("Plain-language view of how your team progressed the ball and created chances.")
-    if events.empty:
-        st.info("No offensive events in current context.")
+    st.caption("Coach-friendly view of attacking behaviour, attack channels, and progressive pass leaders.")
+
+    apply_filters = st.checkbox(
+        "Apply current filters to offensive metrics",
+        value=False,
+        help="OFF compares both teams for the full match. ON applies current team/player filters.",
+        key="offensive_apply_filters",
+    )
+    prog_threshold = st.slider(
+        "Progressive pass threshold (meters gained toward goal)",
+        min_value=8,
+        max_value=15,
+        value=int(PROGRESSIVE_THRESHOLD_DEFAULT),
+        step=1,
+        key="offensive_progressive_threshold",
+        help="A pass is progressive when it moves the ball this many meters closer to goal.",
+    )
+
+    passes_scope = pass_df.copy()
+    events_scope = events.copy()
+    shots_scope = shots_df.copy()
+    if apply_filters:
+        passes_scope = _apply_team_player_filters(passes_scope, team_id=selected_team_id, player_id=selected_player_id)
+        events_scope = _apply_team_player_filters(events_scope, team_id=selected_team_id, player_id=selected_player_id)
+        shots_scope = _apply_team_player_filters(shots_scope, team_id=selected_team_id, player_id=selected_player_id)
+
+    if passes_scope.empty:
+        st.info("No pass events available for the current context.")
+        return
+    if not {"location_x", "pass_end_location_x", "pass_end_location_y"}.issubset(passes_scope.columns):
+        st.info("Pass locations not available in this dataset.")
         return
 
-    offensive = events[events["bucket"].astype("string") == "OFFENSIVE"] if "bucket" in events.columns else events.copy()
-    pass_events = offensive[_event_type_mask(offensive, "Pass")]
-    dribbles = offensive[_event_type_mask(offensive, "Dribble")]
-    shots = shots_df.copy()
+    passes_scope, completion_available = with_pass_features(passes_scope, threshold=float(prog_threshold))
+    if not completion_available:
+        st.warning("Completion unavailable: outcome columns are missing, so passes are treated as completed.")
 
-    completed = int(_pass_completion_mask(pass_events).sum()) if not pass_events.empty else 0
-    progressive = int(_progressive_pass_mask(pass_events).sum()) if not pass_events.empty else 0
-    final_third = int(_final_third_pass_mask(pass_events).sum()) if not pass_events.empty else 0
+    offensive = events_scope[events_scope["bucket"].astype("string") == "OFFENSIVE"] if "bucket" in events_scope.columns else events_scope.copy()
+    dribbles = offensive[_event_type_mask(offensive, "Dribble")]
+    shots = shots_scope.copy()
+    total_passes = int(len(passes_scope))
+    completed_passes = int(passes_scope["is_completed"].sum())
+    progressive_success = int(passes_scope["is_successful_progressive"].sum())
+    final_third = int(_final_third_pass_mask(passes_scope).sum())
     dribble_success = int(_duel_won_mask(dribbles).sum()) if not dribbles.empty else 0
     xg_total = float(pd.to_numeric(shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in shots.columns else 0.0
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total passes", int(len(pass_events)))
-    k2.metric("Completed passes", completed)
-    k3.metric("Progressive passes", progressive)
+    k1.metric("Total passes", total_passes)
+    k2.metric("Completed passes", completed_passes)
+    k3.metric("Successful progressive passes", progressive_success)
     k4.metric("Passes to final third", final_third)
 
     k5, k6, k7, k8 = st.columns(4)
@@ -518,9 +783,61 @@ def _render_offensive_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> Non
     k7.metric("Shots", int(len(shots)))
     k8.metric("xG", f"{xg_total:.2f}")
 
-    if {"minute", "type_name", "team_name", "player_name"}.issubset(offensive.columns):
-        cols = ["minute", "type_name", "team_name", "player_name"]
-        st.dataframe(offensive[cols].sort_values("minute").head(30), use_container_width=True, hide_index=True)
+    st.markdown('<div class="section-title">Attack distribution</div>', unsafe_allow_html=True)
+    st.caption("Distribution of pass end locations by channel: Left / Centre / Right.")
+    home_passes = _team_passes_subset(passes_scope, home_team_id)
+    away_passes = _team_passes_subset(passes_scope, away_team_id)
+    if (home_team_id is None or away_team_id is None) and "team_id" in passes_scope.columns:
+        team_ids = [int(t) for t in pd.to_numeric(passes_scope["team_id"], errors="coerce").dropna().drop_duplicates().tolist()]
+        if len(team_ids) >= 2:
+            home_team_id = team_ids[0] if home_team_id is None else home_team_id
+            away_team_id = team_ids[1] if away_team_id is None else away_team_id
+            home_passes = _team_passes_subset(passes_scope, home_team_id)
+            away_passes = _team_passes_subset(passes_scope, away_team_id)
+        if "team_name" in passes_scope.columns:
+            if home_team_name in {"", "Home"} and home_team_id is not None:
+                home_name_series = passes_scope.loc[pd.to_numeric(passes_scope["team_id"], errors="coerce") == int(home_team_id), "team_name"]
+                if not home_name_series.empty:
+                    home_team_name = str(home_name_series.iloc[0] or home_team_name)
+            if away_team_name in {"", "Away"} and away_team_id is not None:
+                away_name_series = passes_scope.loc[pd.to_numeric(passes_scope["team_id"], errors="coerce") == int(away_team_id), "team_name"]
+                if not away_name_series.empty:
+                    away_team_name = str(away_name_series.iloc[0] or away_team_name)
+    home_summary = summarize_channels(home_passes)
+    away_summary = summarize_channels(away_passes)
+
+    dist_home, dist_away = st.columns(2)
+    with dist_home:
+        _render_attack_distribution_chart(
+            {"Left": home_summary.left, "Centre": home_summary.centre, "Right": home_summary.right},
+            f"{home_team_name} attack channels",
+        )
+    with dist_away:
+        _render_attack_distribution_chart(
+            {"Left": away_summary.left, "Centre": away_summary.centre, "Right": away_summary.right},
+            f"{away_team_name} attack channels",
+        )
+
+    st.markdown('<div class="section-title">Top progressive passers (successful)</div>', unsafe_allow_html=True)
+    passers_home, passers_away = st.columns(2)
+    with passers_home:
+        st.markdown(f"**{home_team_name}**")
+        top3_home = _build_passers_table(home_passes, selected_player_id=selected_player_id, top_n=3)
+        if top3_home.empty:
+            st.info("No progressive passers found.")
+        else:
+            st.dataframe(top3_home, use_container_width=True, hide_index=True)
+            with st.expander("Show top 10", expanded=False):
+                st.dataframe(_build_passers_table(home_passes, selected_player_id=selected_player_id, top_n=10), use_container_width=True, hide_index=True)
+    with passers_away:
+        st.markdown(f"**{away_team_name}**")
+        top3_away = _build_passers_table(away_passes, selected_player_id=selected_player_id, top_n=3)
+        if top3_away.empty:
+            st.info("No progressive passers found.")
+        else:
+            st.dataframe(top3_away, use_container_width=True, hide_index=True)
+            with st.expander("Show top 10", expanded=False):
+                st.dataframe(_build_passers_table(away_passes, selected_player_id=selected_player_id, top_n=10), use_container_width=True, hide_index=True)
 
 
 def _render_defensive_panel(events: pd.DataFrame) -> None:
@@ -660,6 +977,10 @@ official_stats = compute_match_stats(
     match_id=int(match_id),
 )
 _render_score_header(official_stats)
+home_team_id = official_stats.get("home_team_id")
+away_team_id = official_stats.get("away_team_id")
+home_team_name = str(official_stats.get("home_team_name") or "Home")
+away_team_name = str(official_stats.get("away_team_name") or "Away")
 
 analysis_view = render_analysis_nav(current_view=str(st.session_state.get("analysis_view", "Stats")))
 _render_context_chips(selection)
@@ -710,10 +1031,20 @@ elif analysis_view == "Duels / Recoveries":
         match_events=match_events,
     )
 elif analysis_view == "Offensive":
-    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
-    filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
-    offensive_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
-    _render_offensive_panel(filtered_events, offensive_shots)
+    with st.spinner("Loading pass actions..."):
+        offensive_passes = load_match_passes(match_id=int(match_id), data_mode=active_data_mode, columns=MATCH_PASS_COLUMNS)
+    offensive_shots = get_shots_view(match_shots, dim_team=dim_team, dim_player=dim_player)
+    _render_offensive_panel(
+        events=match_events,
+        shots_df=offensive_shots,
+        pass_df=offensive_passes,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+        selected_team_id=selection["team_id"],
+        selected_player_id=selection["player_id"],
+    )
 elif analysis_view == "Defensive":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     _render_defensive_panel(filtered_events)
