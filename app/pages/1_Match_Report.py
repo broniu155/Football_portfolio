@@ -15,6 +15,7 @@ if str(APP_ROOT) not in sys.path:
 
 try:
     from app.components.analysis_navigation import render_analysis_nav
+    from app.components.comparison_cards import render_comparison_panel
     from app.components.data import (
         get_active_data_mode,
         get_lineup_events,
@@ -36,11 +37,13 @@ try:
     )
     from app.components.model_views import get_shots_view
     from app.components.passes import get_filtered_events, render_passes_section
+    from app.components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from app.components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from app.components.ui import setup_page
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
 except (ModuleNotFoundError, KeyError):
     from components.analysis_navigation import render_analysis_nav
+    from components.comparison_cards import render_comparison_panel
     from components.data import (
         get_active_data_mode,
         get_lineup_events,
@@ -62,6 +65,7 @@ except (ModuleNotFoundError, KeyError):
     )
     from components.model_views import get_shots_view
     from components.passes import get_filtered_events, render_passes_section
+    from components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from components.ui import setup_page
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
@@ -94,8 +98,16 @@ MATCH_EVENT_COLUMNS = [
     "pass_cross",
     "pass_outcome",
     "pass_outcome_name",
+    "dribble_outcome_id",
+    "dribble_outcome_name",
+    "dribble_no_touch",
+    "dribble_nutmeg",
+    "dribble_overrun",
     "duel_outcome_name",
     "duel_outcome",
+    "shot_outcome_name",
+    "shot_outcome_id",
+    "shot_statsbomb_xg",
     "team_name",
     "player_name",
 ]
@@ -163,6 +175,11 @@ EXPORT_HINT_COLUMNS = [
     "pass_recipient_name",
     "pass_recipient_id",
     "assisted_shot_id",
+    "dribble_outcome_name",
+    "dribble_outcome_id",
+    "dribble_no_touch",
+    "dribble_nutmeg",
+    "dribble_overrun",
     "duel_type_name",
     "duel_type_id",
     "duel_outcome_name",
@@ -480,6 +497,38 @@ def _render_match_export_panel(
         export_df = payload.get("export_df", pd.DataFrame())
         missing_cols = payload.get("missing_cols", [])
         st.success(f"Ready: {len(export_df):,} rows x {len(export_df.columns):,} columns.")
+        if not export_df.empty:
+            if "dribble_is_attempt" in export_df.columns:
+                dribble_mask = export_df["dribble_is_attempt"].fillna(False).astype(bool)
+            else:
+                event_type = export_df.get("type_name", pd.Series("", index=export_df.index)).astype("string").str.strip().str.lower()
+                dribble_mask = event_type.eq("dribble")
+            st.caption(f"Export summary: total rows={len(export_df):,}, dribble rows={int(dribble_mask.sum()):,}")
+            if dribble_mask.any():
+                outcome_col = (
+                    export_df.get("dribble_outcome_name", pd.Series(pd.NA, index=export_df.index))
+                    .astype("string")
+                    .str.strip()
+                )
+                outcome_dist = (
+                    outcome_col.loc[dribble_mask]
+                    .fillna("Unknown")
+                    .replace("", "Unknown")
+                    .value_counts(dropna=False)
+                    .rename_axis("dribble_outcome")
+                    .reset_index(name="count")
+                )
+                st.dataframe(outcome_dist, use_container_width=True, hide_index=True)
+
+                player_col = export_df.get("player_name", pd.Series("Unknown Player", index=export_df.index)).astype("string").fillna("Unknown Player")
+                top_players = (
+                    player_col.loc[dribble_mask]
+                    .value_counts(dropna=False)
+                    .rename_axis("player_name")
+                    .reset_index(name="attempts")
+                    .head(10)
+                )
+                st.dataframe(top_players, use_container_width=True, hide_index=True)
         if {"attack_channel", "channel_source", "channel_reason"}.issubset(export_df.columns):
             st.caption("Attack channel summary")
             c1, c2, c3 = st.columns(3)
@@ -733,6 +782,68 @@ def _build_passers_table(pass_df: pd.DataFrame, selected_player_id: int | None, 
     return table[show_cols]
 
 
+def _render_offensive_comparison_card(
+    events_scope: pd.DataFrame,
+    shots_scope: pd.DataFrame,
+    match_id: int,
+    home_team_id: int | None,
+    away_team_id: int | None,
+    home_team_name: str,
+    away_team_name: str,
+) -> None:
+    stats = compute_offensive_team_stats(
+        events_df=events_scope,
+        shots_df=shots_scope,
+        match_id=match_id,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+    )
+    home = stats["home"]
+    away = stats["away"]
+    rows = [
+        ("Total Shots", home["total_shots"], away["total_shots"], False),
+        ("Shots on Target", home["shots_on_target"], away["shots_on_target"], False),
+        ("Goals", home["goals"], away["goals"], False),
+        ("Total xG", home["total_xg"], away["total_xg"], False),
+        ("Carries", home["carries"], away["carries"], False),
+        ("Dribble Attempts", home["dribble_attempts"], away["dribble_attempts"], False),
+        ("Dribbles Completed", home["dribbles_completed"], away["dribbles_completed"], False),
+        ("Dribble Success %", home["dribble_success_pct"], away["dribble_success_pct"], True),
+        ("Shots in Box", home["shots_in_box"], away["shots_in_box"], False),
+        ("Crosses", home["crosses"], away["crosses"], False),
+    ]
+    render_comparison_panel(rows=rows, home_name=home_team_name, away_name=away_team_name)
+
+
+def _render_top_dribblers(
+    events_scope: pd.DataFrame,
+    home_team_id: int | None,
+    away_team_id: int | None,
+    home_team_name: str,
+    away_team_name: str,
+) -> None:
+    st.markdown('<div class="section-title">Top Dribble Attempts</div>', unsafe_allow_html=True)
+    left, right = st.columns(2)
+    with left:
+        st.markdown(f"**{home_team_name}**")
+        top_home = top_dribble_players(events_scope, team_id=home_team_id, top_n=3)
+        if top_home.empty:
+            st.info("No dribble attempts found.")
+        else:
+            tbl_home = top_home.copy()
+            tbl_home["success_pct"] = tbl_home["success_pct"].map(lambda v: f"{float(v):.1f}%")
+            st.dataframe(tbl_home, use_container_width=True, hide_index=True)
+    with right:
+        st.markdown(f"**{away_team_name}**")
+        top_away = top_dribble_players(events_scope, team_id=away_team_id, top_n=3)
+        if top_away.empty:
+            st.info("No dribble attempts found.")
+        else:
+            tbl_away = top_away.copy()
+            tbl_away["success_pct"] = tbl_away["success_pct"].map(lambda v: f"{float(v):.1f}%")
+            st.dataframe(tbl_away, use_container_width=True, hide_index=True)
+
+
 def _render_offensive_panel(
     events: pd.DataFrame,
     shots_df: pd.DataFrame,
@@ -743,6 +854,7 @@ def _render_offensive_panel(
     away_team_name: str,
     selected_team_id: int | None,
     selected_player_id: int | None,
+    match_id: int,
 ) -> None:
     st.markdown('<div class="section-title">Offensive - Chance Creation & Progression</div>', unsafe_allow_html=True)
     st.caption("Coach-friendly view of attacking behaviour, attack channels, and progressive pass leaders.")
@@ -783,14 +895,23 @@ def _render_offensive_panel(
         st.warning("Completion unavailable: outcome columns are missing, so passes are treated as completed.")
 
     offensive = events_scope[events_scope["bucket"].astype("string") == "OFFENSIVE"] if "bucket" in events_scope.columns else events_scope.copy()
-    dribbles = offensive[_event_type_mask(offensive, "Dribble")]
     shots = shots_scope.copy()
     total_passes = int(len(passes_scope))
     completed_passes = int(passes_scope["is_completed"].sum())
     progressive_success = int(passes_scope["is_successful_progressive"].sum())
     final_third = int(_final_third_pass_mask(passes_scope).sum())
-    dribble_success = int(_duel_won_mask(dribbles).sum()) if not dribbles.empty else 0
     xg_total = float(pd.to_numeric(shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in shots.columns else 0.0
+
+    st.markdown('<div class="section-title">Offensive Comparison Stats</div>', unsafe_allow_html=True)
+    _render_offensive_comparison_card(
+        events_scope=offensive,
+        shots_scope=shots,
+        match_id=match_id,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+    )
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total passes", total_passes)
@@ -798,11 +919,22 @@ def _render_offensive_panel(
     k3.metric("Successful progressive passes", progressive_success)
     k4.metric("Passes to final third", final_third)
 
-    k5, k6, k7, k8 = st.columns(4)
-    k5.metric("Dribbles attempted", int(len(dribbles)))
-    k6.metric("Dribbles success", dribble_success)
-    k7.metric("Shots", int(len(shots)))
-    k8.metric("xG", f"{xg_total:.2f}")
+    k5, k6 = st.columns(2)
+    k5.metric("Shots", int(len(shots)))
+    k6.metric("xG", f"{xg_total:.2f}")
+
+    dribble_debug = summarize_dribbles(events_scope, team_id=selected_team_id, player_id=selected_player_id)
+    with st.expander("Dribble Debug (selected context)", expanded=False):
+        st.write(
+            {
+                "total_dribble_events": dribble_debug["total_dribble_events"],
+                "counts_by_outcome": dribble_debug["outcomes"],
+                "missing_dribble_object": dribble_debug["missing_dribble_object"],
+                "missing_outcome": dribble_debug["missing_outcome"],
+                "duplicates_removed_by_event_id": dribble_debug["duplicates_removed"],
+                "filtered_out_by_current_filters": dribble_debug["filtered_out"],
+            }
+        )
 
     st.markdown('<div class="section-title">Attack distribution</div>', unsafe_allow_html=True)
     st.caption("Distribution of pass end locations by channel: Left / Centre / Right.")
@@ -859,6 +991,14 @@ def _render_offensive_panel(
             st.dataframe(top3_away, use_container_width=True, hide_index=True)
             with st.expander("Show top 10", expanded=False):
                 st.dataframe(_build_passers_table(away_passes, selected_player_id=selected_player_id, top_n=10), use_container_width=True, hide_index=True)
+
+    _render_top_dribblers(
+        events_scope=offensive,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+    )
 
 
 def _render_defensive_panel(events: pd.DataFrame) -> None:
@@ -1065,6 +1205,7 @@ elif analysis_view == "Offensive":
         away_team_name=away_team_name,
         selected_team_id=selection["team_id"],
         selected_player_id=selection["player_id"],
+        match_id=int(match_id),
     )
 elif analysis_view == "Defensive":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])

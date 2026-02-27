@@ -94,6 +94,25 @@ def main() -> None:
 
     print(f"Wrote {len(export_df):,} rows to {args.output_csv}")
     print(f"Total rows: {len(export_df):,}")
+    dribble_mask = export_df.get("dribble_is_attempt", pd.Series(False, index=export_df.index)).fillna(False).astype(bool)
+    print(f"Dribble rows: {int(dribble_mask.sum()):,}")
+    if dribble_mask.any():
+        dribble_outcomes = (
+            export_df.get("dribble_outcome_name", pd.Series(pd.NA, index=export_df.index))
+            .astype("string")
+            .fillna("Unknown")
+            .replace("", "Unknown")
+        )
+        _print_counts("Dribble outcomes", dribble_outcomes.loc[dribble_mask].value_counts(dropna=False))
+        top_players = (
+            export_df.get("player_name", pd.Series("Unknown Player", index=export_df.index))
+            .astype("string")
+            .fillna("Unknown Player")
+            .loc[dribble_mask]
+            .value_counts(dropna=False)
+            .head(10)
+        )
+        _print_counts("Top 10 players by dribble attempts", top_players)
     if "attack_channel" in export_df.columns:
         _print_counts("Counts by attack_channel", export_df["attack_channel"].astype("string").fillna("Unknown").value_counts(dropna=False))
     if "channel_source" in export_df.columns:

@@ -93,6 +93,17 @@ For event exports, coordinate source precedence is:
 `event.location` (`location_x`,`location_y`) first, then `pass.end_location`, `carry.end_location`, and `shot.end_location` (first two values if shot has `[x,y,z]`).
 Debug columns `channel_source`, `channel_reason`, `x_used`, and `y_used` are included with derived export fields.
 
+## Dribble Counting (StatsBomb Open Data Events v4.0.0)
+
+Dribbles are counted from `fact_events` rows where `type_name == "Dribble"` (or canonical dribble `type_id` where present).
+
+- Attempts: every dribble event.
+- Completed: `dribble_outcome_name == "Complete"`.
+- Incomplete: `dribble_outcome_name == "Incomplete"`.
+- Missing/blank outcome: treated as `Unknown` and not counted as complete.
+
+This follows the StatsBomb Events v4.0.0 dribble structure (`type=Dribble` with dribble outcome in the dribble object).
+
 ## Streamlit Community Cloud
 
 Recommended defaults:

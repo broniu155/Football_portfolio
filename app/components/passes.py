@@ -7,8 +7,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
+    from app.components.comparison_cards import render_comparison_panel
     from app.components.data import get_events
 except (ModuleNotFoundError, KeyError):
+    from components.comparison_cards import render_comparison_panel
     from components.data import get_events
 
 PASS_HEIGHT_CANDIDATES = ["pass_height_name", "pass_height", "pass.height.name", "pass_height__name"]
@@ -330,12 +332,6 @@ def render_pass_map(pass_df: pd.DataFrame, title: str, max_lines: int = 1100) ->
     return fig
 
 
-def _fmt_metric(value: float | None, is_pct: bool = False) -> str:
-    if value is None:
-        return "N/A"
-    return f"{value:.1f}%" if is_pct else str(int(value))
-
-
 def render_pass_comparison_panel(home_stats: dict[str, float | None], away_stats: dict[str, float | None], home_name: str, away_name: str) -> None:
     rows = [
         ("Total Passes", home_stats["total_passes"], away_stats["total_passes"], False),
@@ -349,18 +345,7 @@ def render_pass_comparison_panel(home_stats: dict[str, float | None], away_stats
         ("Crosses", home_stats["crosses"], away_stats["crosses"], False),
         ("Cross Completion %", home_stats["cross_completion_pct"], away_stats["cross_completion_pct"], True),
     ]
-    html = ['<div class="match-stats-panel">']
-    html.append(f'<div class="match-stats-context">{home_name} vs {away_name}</div>')
-    for label, hv, av, is_pct in rows:
-        html.append(
-            "<div class='match-stats-row'><div class='match-stats-values'>"
-            f"<div class='home'>{_fmt_metric(hv, is_pct=is_pct)}</div>"
-            f"<div class='label'>{label}</div>"
-            f"<div class='away'>{_fmt_metric(av, is_pct=is_pct)}</div>"
-            "</div></div>"
-        )
-    html.append("</div>")
-    st.markdown("".join(html), unsafe_allow_html=True)
+    render_comparison_panel(rows=rows, home_name=home_name, away_name=away_name)
 
 
 def _team_subset(pass_df: pd.DataFrame, team_id: int, selected_team_id: int | None, selected_player_id: int | None) -> pd.DataFrame:
