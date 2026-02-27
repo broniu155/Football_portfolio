@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +14,7 @@ if str(APP_ROOT) not in sys.path:
 
 try:
     from app.components.analysis_navigation import render_analysis_nav
+    from app.components.analysis_registry import OFFENSIVE_COMPARISON_METRICS, classify_analysis_groups
     from app.components.comparison_cards import render_comparison_panel
     from app.components.data import (
         get_active_data_mode,
@@ -23,7 +23,6 @@ try:
         get_shots,
         load_dimensions,
         load_match_events,
-        load_match_passes,
     )
     from app.components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
     from app.components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
@@ -38,11 +37,11 @@ try:
     from app.components.model_views import get_shots_view
     from app.components.passes import get_filtered_events, render_passes_section
     from app.components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
-    from app.components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from app.components.ui import setup_page
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
 except (ModuleNotFoundError, KeyError):
     from components.analysis_navigation import render_analysis_nav
+    from components.analysis_registry import OFFENSIVE_COMPARISON_METRICS, classify_analysis_groups
     from components.comparison_cards import render_comparison_panel
     from components.data import (
         get_active_data_mode,
@@ -51,7 +50,6 @@ except (ModuleNotFoundError, KeyError):
         get_shots,
         load_dimensions,
         load_match_events,
-        load_match_passes,
     )
     from components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
     from components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
@@ -66,7 +64,6 @@ except (ModuleNotFoundError, KeyError):
     from components.model_views import get_shots_view
     from components.passes import get_filtered_events, render_passes_section
     from components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
-    from components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, summarize_channels, top_progressive_passers, with_pass_features
     from components.ui import setup_page
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
 
@@ -269,7 +266,18 @@ def _render_stats_section(
         st.error(str(err))
 
     st.markdown('<div class="section-title">Match Stats</div>', unsafe_allow_html=True)
-    render_match_stats_panel(stats_payload, filtered=apply_stats_filters)
+    shot_metric_tokens = {"shot", "xg", "goal"}
+    filtered_metrics = {
+        label: values
+        for label, values in stats_payload.get("metrics", {}).items()
+        if not any(token in str(label).strip().lower() for token in shot_metric_tokens)
+    }
+    if filtered_metrics:
+        stats_no_shots = dict(stats_payload)
+        stats_no_shots["metrics"] = filtered_metrics
+        render_match_stats_panel(stats_no_shots, filtered=apply_stats_filters)
+    else:
+        st.info("Shot-related match stats are shown in Offensive.")
 
     with st.spinner("Loading lineup context..."):
         lineup_events = get_lineup_events(match_id=match_id)
@@ -529,6 +537,47 @@ def _render_match_export_panel(
                     .head(10)
                 )
                 st.dataframe(top_players, use_container_width=True, hide_index=True)
+            if {"analysis_group", "analysis_subgroup"}.issubset(export_df.columns):
+                st.caption("Analysis grouping summary")
+                group_counts = (
+                    export_df["analysis_group"]
+                    .astype("string")
+                    .fillna("other")
+                    .value_counts(dropna=False)
+                    .rename_axis("analysis_group")
+                    .reset_index(name="count")
+                )
+                subgroup_counts = (
+                    export_df["analysis_subgroup"]
+                    .astype("string")
+                    .fillna("other")
+                    .value_counts(dropna=False)
+                    .rename_axis("analysis_subgroup")
+                    .reset_index(name="count")
+                )
+                total_groups = int(group_counts["count"].sum()) if not group_counts.empty else 0
+                st.caption(f"Sanity check: total rows={len(export_df):,}, sum(groups)={total_groups:,}")
+                sg1, sg2 = st.columns(2)
+                with sg1:
+                    st.dataframe(group_counts, use_container_width=True, hide_index=True)
+                with sg2:
+                    st.dataframe(subgroup_counts.head(20), use_container_width=True, hide_index=True)
+
+                event_type = export_df.get("type_name", pd.Series("", index=export_df.index)).astype("string").str.strip().str.lower()
+                counts_focus = pd.DataFrame(
+                    {
+                        "metric": ["shots", "dribbles", "duels", "recoveries", "carries", "passes"],
+                        "count": [
+                            int(event_type.eq("shot").sum()),
+                            int(event_type.eq("dribble").sum()),
+                            int(event_type.isin({"duel", "50/50"}).sum()),
+                            int(event_type.isin({"ball recovery", "interception"}).sum()),
+                            int(event_type.eq("carry").sum()),
+                            int(event_type.eq("pass").sum()),
+                        ],
+                    }
+                )
+                st.dataframe(counts_focus, use_container_width=True, hide_index=True)
         if {"attack_channel", "channel_source", "channel_reason"}.issubset(export_df.columns):
             st.caption("Attack channel summary")
             c1, c2, c3 = st.columns(3)
@@ -710,16 +759,6 @@ def _duel_won_mask(df: pd.DataFrame) -> pd.Series:
     return is_duel & won.fillna(False)
 
 
-def _final_third_pass_mask(df: pd.DataFrame) -> pd.Series:
-    if "pass_end_location_x" not in df.columns:
-        return pd.Series(False, index=df.index)
-    end_x = pd.to_numeric(df["pass_end_location_x"], errors="coerce")
-    if end_x.dropna().empty:
-        return pd.Series(False, index=df.index)
-    threshold = 80.0 if float(end_x.max()) > 101.0 else (2.0 / 3.0) * 100.0
-    return end_x.ge(threshold).fillna(False)
-
-
 def _render_bucket_debug(events: pd.DataFrame, team_id: int | None, player_id: int | None) -> None:
     with st.expander("Developer tools", expanded=False):
         show_debug = st.checkbox(
@@ -735,51 +774,6 @@ def _render_bucket_debug(events: pd.DataFrame, team_id: int | None, player_id: i
             return
         counts = scoped["bucket"].astype("string").value_counts(dropna=False).rename_axis("bucket").reset_index(name="count")
         st.dataframe(counts, use_container_width=True, hide_index=True)
-
-
-def _team_passes_subset(pass_df: pd.DataFrame, team_id: int | None) -> pd.DataFrame:
-    if team_id is None or "team_id" not in pass_df.columns:
-        return pass_df.iloc[0:0].copy() if team_id is not None else pass_df.copy()
-    return pass_df[pd.to_numeric(pass_df["team_id"], errors="coerce") == int(team_id)].copy()
-
-
-def _render_attack_distribution_chart(summary: dict[str, int], title: str) -> None:
-    left = int(summary.get("Left", 0))
-    centre = int(summary.get("Centre", 0))
-    right = int(summary.get("Right", 0))
-    total = max(1, left + centre + right)
-    fig = go.Figure()
-    fig.add_bar(y=[""], x=[left], name="Left", orientation="h", marker_color="#64748B", text=[f"{left/total:.0%}"])
-    fig.add_bar(y=[""], x=[centre], name="Centre", orientation="h", marker_color="#38BDF8", text=[f"{centre/total:.0%}"])
-    fig.add_bar(y=[""], x=[right], name="Right", orientation="h", marker_color="#94A3B8", text=[f"{right/total:.0%}"])
-    fig.update_layout(
-        title=title,
-        barmode="stack",
-        paper_bgcolor="#0b1220",
-        plot_bgcolor="#111a2b",
-        font=dict(color="#e7edf7"),
-        margin=dict(l=10, r=10, t=45, b=70),
-        height=220,
-        legend=dict(orientation="h", yanchor="top", y=-0.35, xanchor="left", x=0),
-    )
-    fig.update_xaxes(visible=False, showgrid=False, zeroline=False)
-    fig.update_yaxes(visible=False, showgrid=False, zeroline=False)
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"Left {left} | Centre {centre} | Right {right} ({left + centre + right} total)")
-
-
-def _build_passers_table(pass_df: pd.DataFrame, selected_player_id: int | None, top_n: int) -> pd.DataFrame:
-    top = top_progressive_passers(pass_df, top_n=top_n)
-    if top.empty:
-        return top
-    table = top.copy()
-    table["progressive_completion_pct"] = table["progressive_completion_pct"].map(lambda v: f"{float(v):.1f}%")
-    table["avg_progressive_gain"] = table["avg_progressive_gain"].map(lambda v: f"{float(v):.1f}m")
-    if selected_player_id is not None and "player_id" in table.columns:
-        is_selected = pd.to_numeric(table["player_id"], errors="coerce") == int(selected_player_id)
-        table["selected"] = is_selected.map(lambda v: "*" if bool(v) else "")
-    show_cols = [c for c in ("selected", "player_name", "successful_progressive", "progressive_completion_pct", "avg_progressive_gain") if c in table.columns]
-    return table[show_cols]
 
 
 def _render_offensive_comparison_card(
@@ -800,18 +794,7 @@ def _render_offensive_comparison_card(
     )
     home = stats["home"]
     away = stats["away"]
-    rows = [
-        ("Total Shots", home["total_shots"], away["total_shots"], False),
-        ("Shots on Target", home["shots_on_target"], away["shots_on_target"], False),
-        ("Goals", home["goals"], away["goals"], False),
-        ("Total xG", home["total_xg"], away["total_xg"], False),
-        ("Carries", home["carries"], away["carries"], False),
-        ("Dribble Attempts", home["dribble_attempts"], away["dribble_attempts"], False),
-        ("Dribbles Completed", home["dribbles_completed"], away["dribbles_completed"], False),
-        ("Dribble Success %", home["dribble_success_pct"], away["dribble_success_pct"], True),
-        ("Shots in Box", home["shots_in_box"], away["shots_in_box"], False),
-        ("Crosses", home["crosses"], away["crosses"], False),
-    ]
+    rows = [(label, home.get(metric_id), away.get(metric_id), is_pct) for metric_id, label, is_pct in OFFENSIVE_COMPARISON_METRICS]
     render_comparison_panel(rows=rows, home_name=home_team_name, away_name=away_team_name)
 
 
@@ -847,7 +830,6 @@ def _render_top_dribblers(
 def _render_offensive_panel(
     events: pd.DataFrame,
     shots_df: pd.DataFrame,
-    pass_df: pd.DataFrame,
     home_team_id: int | None,
     away_team_id: int | None,
     home_team_name: str,
@@ -857,7 +839,7 @@ def _render_offensive_panel(
     match_id: int,
 ) -> None:
     st.markdown('<div class="section-title">Offensive - Chance Creation & Progression</div>', unsafe_allow_html=True)
-    st.caption("Coach-friendly view of attacking behaviour, attack channels, and progressive pass leaders.")
+    st.caption("Coach-friendly view of shot creation, attacking duels, and chance quality.")
 
     apply_filters = st.checkbox(
         "Apply current filters to offensive metrics",
@@ -865,42 +847,15 @@ def _render_offensive_panel(
         help="OFF compares both teams for the full match. ON applies current team/player filters.",
         key="offensive_apply_filters",
     )
-    prog_threshold = st.slider(
-        "Progressive pass threshold (meters gained toward goal)",
-        min_value=8,
-        max_value=15,
-        value=int(PROGRESSIVE_THRESHOLD_DEFAULT),
-        step=1,
-        key="offensive_progressive_threshold",
-        help="A pass is progressive when it moves the ball this many meters closer to goal.",
-    )
-
-    passes_scope = pass_df.copy()
     events_scope = events.copy()
     shots_scope = shots_df.copy()
     if apply_filters:
-        passes_scope = _apply_team_player_filters(passes_scope, team_id=selected_team_id, player_id=selected_player_id)
         events_scope = _apply_team_player_filters(events_scope, team_id=selected_team_id, player_id=selected_player_id)
         shots_scope = _apply_team_player_filters(shots_scope, team_id=selected_team_id, player_id=selected_player_id)
 
-    if passes_scope.empty:
-        st.info("No pass events available for the current context.")
-        return
-    if not {"location_x", "pass_end_location_x", "pass_end_location_y"}.issubset(passes_scope.columns):
-        st.info("Pass locations not available in this dataset.")
-        return
-
-    passes_scope, completion_available = with_pass_features(passes_scope, threshold=float(prog_threshold))
-    if not completion_available:
-        st.warning("Completion unavailable: outcome columns are missing, so passes are treated as completed.")
-
-    offensive = events_scope[events_scope["bucket"].astype("string") == "OFFENSIVE"] if "bucket" in events_scope.columns else events_scope.copy()
+    classified_events = classify_analysis_groups(events_scope)
+    offensive = classified_events[classified_events["analysis_group"].astype("string") == "offensive"].copy()
     shots = shots_scope.copy()
-    total_passes = int(len(passes_scope))
-    completed_passes = int(passes_scope["is_completed"].sum())
-    progressive_success = int(passes_scope["is_successful_progressive"].sum())
-    final_third = int(_final_third_pass_mask(passes_scope).sum())
-    xg_total = float(pd.to_numeric(shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in shots.columns else 0.0
 
     st.markdown('<div class="section-title">Offensive Comparison Stats</div>', unsafe_allow_html=True)
     _render_offensive_comparison_card(
@@ -913,15 +868,12 @@ def _render_offensive_panel(
         away_team_name=away_team_name,
     )
 
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total passes", total_passes)
-    k2.metric("Completed passes", completed_passes)
-    k3.metric("Successful progressive passes", progressive_success)
-    k4.metric("Passes to final third", final_third)
-
-    k5, k6 = st.columns(2)
-    k5.metric("Shots", int(len(shots)))
-    k6.metric("xG", f"{xg_total:.2f}")
+    offensive_duels = offensive[offensive["analysis_subgroup"].astype("string") == "duels_offensive"].copy() if not offensive.empty else offensive
+    fouls_won = int(_event_type_mask(offensive, "Foul Won").sum()) if not offensive.empty else 0
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Offensive duels/actions", int(len(offensive_duels)))
+    k2.metric("Fouls won (attacking phase)", fouls_won)
+    k3.metric("Shot events", int(_event_type_mask(shots, "Shot").sum()) if "type_name" in shots.columns else int(len(shots)))
 
     dribble_debug = summarize_dribbles(events_scope, team_id=selected_team_id, player_id=selected_player_id)
     with st.expander("Dribble Debug (selected context)", expanded=False):
@@ -936,61 +888,38 @@ def _render_offensive_panel(
             }
         )
 
-    st.markdown('<div class="section-title">Attack distribution</div>', unsafe_allow_html=True)
-    st.caption("Distribution of pass end locations by channel: Left / Centre / Right.")
-    home_passes = _team_passes_subset(passes_scope, home_team_id)
-    away_passes = _team_passes_subset(passes_scope, away_team_id)
-    if (home_team_id is None or away_team_id is None) and "team_id" in passes_scope.columns:
-        team_ids = [int(t) for t in pd.to_numeric(passes_scope["team_id"], errors="coerce").dropna().drop_duplicates().tolist()]
-        if len(team_ids) >= 2:
-            home_team_id = team_ids[0] if home_team_id is None else home_team_id
-            away_team_id = team_ids[1] if away_team_id is None else away_team_id
-            home_passes = _team_passes_subset(passes_scope, home_team_id)
-            away_passes = _team_passes_subset(passes_scope, away_team_id)
-        if "team_name" in passes_scope.columns:
-            if home_team_name in {"", "Home"} and home_team_id is not None:
-                home_name_series = passes_scope.loc[pd.to_numeric(passes_scope["team_id"], errors="coerce") == int(home_team_id), "team_name"]
-                if not home_name_series.empty:
-                    home_team_name = str(home_name_series.iloc[0] or home_team_name)
-            if away_team_name in {"", "Away"} and away_team_id is not None:
-                away_name_series = passes_scope.loc[pd.to_numeric(passes_scope["team_id"], errors="coerce") == int(away_team_id), "team_name"]
-                if not away_name_series.empty:
-                    away_team_name = str(away_name_series.iloc[0] or away_team_name)
-    home_summary = summarize_channels(home_passes)
-    away_summary = summarize_channels(away_passes)
+    if {"x", "y"}.issubset(shots.columns) and not shots.empty:
+        st.markdown('<div class="section-title">Shot Map</div>', unsafe_allow_html=True)
+        shot_map_fig = draw_pitch_figure(shots, title="Offensive Shot Map", subtitle=f"{home_team_name} vs {away_team_name}")
+        st.plotly_chart(shot_map_fig, use_container_width=True)
 
-    dist_home, dist_away = st.columns(2)
-    with dist_home:
-        _render_attack_distribution_chart(
-            {"Left": home_summary.left, "Centre": home_summary.centre, "Right": home_summary.right},
-            f"{home_team_name} attack channels",
+    if "shot_outcome" in shots.columns and not shots.empty:
+        st.markdown('<div class="section-title">Shot Outcomes</div>', unsafe_allow_html=True)
+        outcome_dist = (
+            shots["shot_outcome"]
+            .astype("string")
+            .str.strip()
+            .fillna("Unknown")
+            .replace("", "Unknown")
+            .value_counts(dropna=False)
+            .rename_axis("shot_outcome")
+            .reset_index(name="count")
         )
-    with dist_away:
-        _render_attack_distribution_chart(
-            {"Left": away_summary.left, "Centre": away_summary.centre, "Right": away_summary.right},
-            f"{away_team_name} attack channels",
-        )
+        st.dataframe(outcome_dist, use_container_width=True, hide_index=True)
 
-    st.markdown('<div class="section-title">Top progressive passers (successful)</div>', unsafe_allow_html=True)
-    passers_home, passers_away = st.columns(2)
-    with passers_home:
-        st.markdown(f"**{home_team_name}**")
-        top3_home = _build_passers_table(home_passes, selected_player_id=selected_player_id, top_n=3)
-        if top3_home.empty:
-            st.info("No progressive passers found.")
-        else:
-            st.dataframe(top3_home, use_container_width=True, hide_index=True)
-            with st.expander("Show top 10", expanded=False):
-                st.dataframe(_build_passers_table(home_passes, selected_player_id=selected_player_id, top_n=10), use_container_width=True, hide_index=True)
-    with passers_away:
-        st.markdown(f"**{away_team_name}**")
-        top3_away = _build_passers_table(away_passes, selected_player_id=selected_player_id, top_n=3)
-        if top3_away.empty:
-            st.info("No progressive passers found.")
-        else:
-            st.dataframe(top3_away, use_container_width=True, hide_index=True)
-            with st.expander("Show top 10", expanded=False):
-                st.dataframe(_build_passers_table(away_passes, selected_player_id=selected_player_id, top_n=10), use_container_width=True, hide_index=True)
+    if {"minute", "xg"}.issubset(shots.columns) and not shots.empty:
+        st.markdown('<div class="section-title">Cumulative xG Timeline</div>', unsafe_allow_html=True)
+        timeline = shots.groupby("minute", as_index=False)["xg"].sum().sort_values("minute")
+        timeline["cum_xg"] = timeline["xg"].cumsum()
+        fig_timeline = px.line(timeline, x="minute", y="cum_xg", markers=True)
+        fig_timeline.update_layout(
+            paper_bgcolor="#0b1220",
+            plot_bgcolor="#111a2b",
+            font=dict(color="#e7edf7"),
+            legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="left", x=0),
+            margin=dict(l=10, r=10, t=30, b=80),
+        )
+        st.plotly_chart(fig_timeline, use_container_width=True)
 
     _render_top_dribblers(
         events_scope=offensive,
@@ -1008,12 +937,15 @@ def _render_defensive_panel(events: pd.DataFrame) -> None:
         st.info("No defensive events in current context.")
         return
 
-    defensive = events[events["bucket"].astype("string") == "DEFENSIVE"] if "bucket" in events.columns else events.copy()
+    classified = classify_analysis_groups(events)
+    defensive = classified[classified["analysis_group"].astype("string") == "defensive"].copy()
+    recoveries_df = defensive[defensive["analysis_subgroup"].astype("string") == "recoveries"].copy()
+    defensive_duels_df = defensive[defensive["analysis_subgroup"].astype("string") == "duels_defensive"].copy()
     pressures = int(_event_type_mask(defensive, "Pressure").sum())
     counterpress = int(defensive["is_counterpress"].sum()) if "is_counterpress" in defensive.columns else 0
     interceptions = int(_event_type_mask(defensive, "Interception").sum())
-    recoveries = int(_event_type_mask(defensive, "Ball Recovery").sum())
-    duels_won = int(_duel_won_mask(defensive).sum())
+    recoveries = int(len(recoveries_df))
+    duels_won = int(_duel_won_mask(defensive_duels_df).sum()) if not defensive_duels_df.empty else 0
     blocks = int(_event_type_mask(defensive, "Block").sum())
     clearances = int(_event_type_mask(defensive, "Clearance").sum())
     fouls = int(_event_type_mask(defensive, "Foul Committed").sum())
@@ -1038,11 +970,19 @@ def _render_transitions_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> N
         st.info("No transition events in current context.")
         return
 
-    transition = events[events["bucket"].astype("string") == "TRANSITION"] if "bucket" in events.columns else events.copy()
+    classified = classify_analysis_groups(events)
+    transition = classified[classified["analysis_group"].astype("string") == "transitions"].copy()
+    carries = transition[transition["analysis_subgroup"].astype("string") == "carries"].copy() if not transition.empty else transition
     turnovers = int(transition["is_turnover"].sum()) if "is_turnover" in transition.columns else 0
     counterpress = int(transition["is_counterpress"].sum()) if "is_counterpress" in transition.columns else 0
     counter_regains = int(transition["is_counterpress_regain"].sum()) if "is_counterpress_regain" in transition.columns else 0
     counters = int(transition["is_counter"].sum()) if "is_counter" in transition.columns else 0
+    carry_count = int(_event_type_mask(carries, "Carry").sum()) if not carries.empty else 0
+    progressive_carries = 0
+    if not carries.empty and {"location_x", "carry_end_location_x"}.issubset(carries.columns):
+        start_x = pd.to_numeric(carries["location_x"], errors="coerce")
+        end_x = pd.to_numeric(carries["carry_end_location_x"], errors="coerce")
+        progressive_carries = int((end_x - start_x).ge(10.0).fillna(False).sum())
 
     shots_counter = pd.DataFrame()
     if "play_pattern_name" in shots_df.columns:
@@ -1050,12 +990,14 @@ def _render_transitions_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> N
             shots_df["play_pattern_name"].astype("string").str.strip().str.lower().eq("from counter")
         ].copy()
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Turnovers", turnovers)
     k2.metric("Counterpress", counterpress)
     k3.metric("Regains in 6s", counter_regains)
     k4.metric("Counters", counters)
     k5.metric("Shots from counters", int(len(shots_counter)))
+    k6.metric("Carries", carry_count)
+    k7.metric("Progressive carries", progressive_carries)
 
     if {"minute", "type_name", "is_turnover", "is_counterpress_regain"}.issubset(transition.columns):
         cols = ["minute", "type_name", "is_turnover", "is_counterpress_regain"]
@@ -1156,13 +1098,18 @@ if analysis_view == "Stats":
         match_shots=match_shots,
         official_stats=official_stats,
     )
-elif analysis_view == "Shots":
-    _render_shots_section(
-        selection=selection,
-        dim_match=dim_match,
-        dim_team=dim_team,
-        dim_player=dim_player,
-        match_shots=match_shots,
+elif analysis_view == "Offensive":
+    offensive_shots = get_shots_view(match_shots, dim_team=dim_team, dim_player=dim_player)
+    _render_offensive_panel(
+        events=match_events,
+        shots_df=offensive_shots,
+        home_team_id=home_team_id,
+        away_team_id=away_team_id,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+        selected_team_id=selection["team_id"],
+        selected_player_id=selection["player_id"],
+        match_id=int(match_id),
     )
 elif analysis_view == "Passes":
     match_row = (
@@ -1184,37 +1131,14 @@ elif analysis_view == "Passes":
         selected_player_id=selection["player_id"],
         events=match_events,
     )
-elif analysis_view == "Duels / Recoveries":
-    _render_duels_section(
-        match_id=int(match_id),
-        team_id=selection["team_id"],
-        player_id=selection["player_id"],
-        match_events=match_events,
-    )
-elif analysis_view == "Offensive":
-    with st.spinner("Loading pass actions..."):
-        offensive_passes = load_match_passes(match_id=int(match_id), data_mode=active_data_mode, columns=MATCH_PASS_COLUMNS)
-    offensive_shots = get_shots_view(match_shots, dim_team=dim_team, dim_player=dim_player)
-    _render_offensive_panel(
-        events=match_events,
-        shots_df=offensive_shots,
-        pass_df=offensive_passes,
-        home_team_id=home_team_id,
-        away_team_id=away_team_id,
-        home_team_name=home_team_name,
-        away_team_name=away_team_name,
-        selected_team_id=selection["team_id"],
-        selected_player_id=selection["player_id"],
-        match_id=int(match_id),
-    )
-elif analysis_view == "Defensive":
-    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
-    _render_defensive_panel(filtered_events)
 elif analysis_view == "Transitions":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
     transition_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
     _render_transitions_panel(filtered_events, transition_shots)
+elif analysis_view == "Defensive":
+    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
+    _render_defensive_panel(filtered_events)
 elif analysis_view == "Set Pieces":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])

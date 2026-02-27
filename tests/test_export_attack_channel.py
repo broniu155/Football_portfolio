@@ -23,12 +23,15 @@ class ExportAttackChannelTests(unittest.TestCase):
         )
         out = build_match_events_export_df(df, include_derived=True, essential_only=False)
         self.assertTrue({"attack_channel", "channel_source", "channel_reason", "x_used", "y_used"}.issubset(out.columns))
+        self.assertTrue({"analysis_group", "analysis_subgroup"}.issubset(out.columns))
         self.assertTrue({"dribble_is_attempt", "dribble_is_complete", "dribble_is_incomplete", "dribble_outcome_name", "dribble_outcome_raw"}.issubset(out.columns))
         self.assertEqual(out["attack_channel"].tolist(), ["Left", "Right", "Centre"])
         self.assertEqual(out["channel_source"].tolist(), ["event.location", "shot.end_location", "event.location"])
         self.assertEqual(out["channel_reason"].tolist(), ["ok", "ok", "ok"])
         self.assertEqual(out["dribble_is_attempt"].tolist(), [False, False, True])
         self.assertEqual(out["dribble_is_incomplete"].tolist(), [False, False, True])
+        self.assertEqual(out["analysis_group"].tolist(), ["passes", "offensive", "offensive"])
+        self.assertEqual(out["analysis_subgroup"].tolist(), ["passes", "shots", "duels_offensive"])
 
 
 if __name__ == "__main__":

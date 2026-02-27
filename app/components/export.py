@@ -4,6 +4,7 @@ import io
 
 import pandas as pd
 
+from app.components.analysis_registry import classify_analysis_groups
 from app.components.attack_channels import derive_attack_channel_columns
 from app.components.dribbles import prepare_dribble_events
 from app.components.passes_metrics import PROGRESSIVE_THRESHOLD_DEFAULT, pass_completed_mask, progressive_pass_mask
@@ -27,6 +28,8 @@ ESSENTIAL_COLUMNS = [
     "play_pattern_name",
     "location_x",
     "location_y",
+    "analysis_group",
+    "analysis_subgroup",
     "pass_end_location_x",
     "pass_end_location_y",
     "pass_outcome_name",
@@ -111,6 +114,7 @@ def build_match_events_export_df(events_df: pd.DataFrame, include_derived: bool,
         return events_df.copy()
 
     out = events_df.copy()
+    out = classify_analysis_groups(out)
     out = _with_dribble_columns(out)
     if include_derived:
         out = _derived_columns(out)
@@ -139,6 +143,8 @@ def build_match_events_export_df(events_df: pd.DataFrame, include_derived: bool,
                         "dribble_is_complete",
                         "dribble_is_incomplete",
                         "dribble_outcome_raw",
+                        "analysis_group",
+                        "analysis_subgroup",
                     ]
                     if c in out.columns
                 ]

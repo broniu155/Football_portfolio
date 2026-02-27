@@ -113,6 +113,19 @@ def main() -> None:
             .head(10)
         )
         _print_counts("Top 10 players by dribble attempts", top_players)
+    if {"analysis_group", "analysis_subgroup"}.issubset(export_df.columns):
+        _print_counts(
+            "Counts by analysis_group",
+            export_df["analysis_group"].astype("string").fillna("other").value_counts(dropna=False),
+        )
+        _print_counts(
+            "Counts by analysis_subgroup",
+            export_df["analysis_subgroup"].astype("string").fillna("other").value_counts(dropna=False),
+        )
+        group_total = int(
+            export_df["analysis_group"].astype("string").fillna("other").value_counts(dropna=False).sum()
+        )
+        print(f"Sanity check: total_rows={len(export_df):,}, sum(groups)={group_total:,}")
     if "attack_channel" in export_df.columns:
         _print_counts("Counts by attack_channel", export_df["attack_channel"].astype("string").fillna("Unknown").value_counts(dropna=False))
     if "channel_source" in export_df.columns:

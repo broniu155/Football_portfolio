@@ -174,6 +174,8 @@ def compute_offensive_team_stats(
 
     shot_outcome = _coalesce(shots, ["shot_outcome", "shot_outcome_name"], default=pd.NA).astype("string").str.strip().str.lower()
     shots_on_target_mask = shot_outcome.isin({"goal", "saved", "saved to post"}).fillna(False)
+    shots_off_target_mask = shot_outcome.isin({"off t", "wayward", "post"}).fillna(False)
+    blocked_shots_mask = shot_outcome.eq("blocked").fillna(False)
     goals_mask = shot_outcome.eq("goal").fillna(False)
     if "shot_outcome_id" in shots.columns:
         goals_mask = goals_mask | pd.to_numeric(shots["shot_outcome_id"], errors="coerce").eq(97)
@@ -183,11 +185,12 @@ def compute_offensive_team_stats(
 
     shot_totals = _team_pair_count(shots, pd.Series(True, index=shots.index), home_team_id, away_team_id)
     shot_on_target = _team_pair_count(shots, shots_on_target_mask, home_team_id, away_team_id)
+    shot_off_target = _team_pair_count(shots, shots_off_target_mask, home_team_id, away_team_id)
+    blocked_shots = _team_pair_count(shots, blocked_shots_mask, home_team_id, away_team_id)
     goals = _team_pair_count(shots, goals_mask, home_team_id, away_team_id)
     shots_box = _team_pair_count(shots, shots_in_box.fillna(False), home_team_id, away_team_id)
     xg_home, xg_away = _team_pair_sum(shots.assign(xg_value=pd.to_numeric(_coalesce(shots, ["xg", "shot_statsbomb_xg"], default=0.0), errors="coerce")), "xg_value", home_team_id, away_team_id)
 
-    carries = _team_pair_count(events, _event_type_mask(events, "Carry"), home_team_id, away_team_id)
     crosses = _team_pair_count(
         events,
         _event_type_mask(events, "Pass") & _as_bool(_coalesce(events, ["pass_cross"], default=False)),
@@ -203,9 +206,11 @@ def compute_offensive_team_stats(
         "home": {
             "total_shots": shot_totals[0],
             "shots_on_target": shot_on_target[0],
+            "shots_off_target": shot_off_target[0],
+            "blocked_shots": blocked_shots[0],
             "goals": goals[0],
             "total_xg": round(xg_home, 2),
-            "carries": carries[0],
+            "xg_per_shot": round((xg_home / shot_totals[0]), 3) if shot_totals[0] else 0.0,
             "dribble_attempts": dribble_attempts[0],
             "dribbles_completed": dribble_complete[0],
             "dribble_success_pct": round((dribble_complete[0] / dribble_attempts[0] * 100.0), 1) if dribble_attempts[0] else 0.0,
@@ -215,9 +220,11 @@ def compute_offensive_team_stats(
         "away": {
             "total_shots": shot_totals[1],
             "shots_on_target": shot_on_target[1],
+            "shots_off_target": shot_off_target[1],
+            "blocked_shots": blocked_shots[1],
             "goals": goals[1],
             "total_xg": round(xg_away, 2),
-            "carries": carries[1],
+            "xg_per_shot": round((xg_away / shot_totals[1]), 3) if shot_totals[1] else 0.0,
             "dribble_attempts": dribble_attempts[1],
             "dribbles_completed": dribble_complete[1],
             "dribble_success_pct": round((dribble_complete[1] / dribble_attempts[1] * 100.0), 1) if dribble_attempts[1] else 0.0,

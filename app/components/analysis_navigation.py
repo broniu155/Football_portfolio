@@ -2,16 +2,10 @@ from __future__ import annotations
 
 import streamlit as st
 
-ANALYSIS_VIEWS = (
-    "Stats",
-    "Offensive",
-    "Defensive",
-    "Transitions",
-    "Set Pieces",
-    "Shots",
-    "Passes",
-    "Duels / Recoveries",
-)
+try:
+    from app.components.analysis_registry import ANALYSIS_VIEWS
+except (ModuleNotFoundError, KeyError):
+    from components.analysis_registry import ANALYSIS_VIEWS
 
 
 def render_analysis_nav(current_view: str = "Stats") -> str:
