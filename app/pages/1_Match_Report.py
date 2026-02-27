@@ -480,6 +480,27 @@ def _render_match_export_panel(
         export_df = payload.get("export_df", pd.DataFrame())
         missing_cols = payload.get("missing_cols", [])
         st.success(f"Ready: {len(export_df):,} rows x {len(export_df.columns):,} columns.")
+        if {"attack_channel", "channel_source", "channel_reason"}.issubset(export_df.columns):
+            st.caption("Attack channel summary")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.dataframe(
+                    export_df["attack_channel"].astype("string").value_counts(dropna=False).rename_axis("attack_channel").reset_index(name="count"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            with c2:
+                st.dataframe(
+                    export_df["channel_source"].astype("string").value_counts(dropna=False).rename_axis("channel_source").reset_index(name="count"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            with c3:
+                st.dataframe(
+                    export_df["channel_reason"].astype("string").value_counts(dropna=False).rename_axis("channel_reason").reset_index(name="count"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
         if essential_only:
             missing_essentials = [col for col in ESSENTIAL_COLUMNS if col not in export_df.columns]
             if missing_essentials:

@@ -80,6 +80,19 @@ To regenerate sample data locally (Bundesliga 2023/2024, default 10 matches):
 python src/build_sample_data_model.py --n-matches 10
 ```
 
+## Attack Channel Zoning
+
+`attack_channel` uses StatsBomb pitch coordinates on a 120x80 surface (`x` in `[0,120]`, `y` in `[0,80]`).
+Lane bins are defined on `y` without orientation flipping in raw data:
+
+- `Left`: `0 <= y < 80/3`
+- `Centre`: `80/3 <= y < 160/3`
+- `Right`: `160/3 <= y <= 80`
+
+For event exports, coordinate source precedence is:
+`event.location` (`location_x`,`location_y`) first, then `pass.end_location`, `carry.end_location`, and `shot.end_location` (first two values if shot has `[x,y,z]`).
+Debug columns `channel_source`, `channel_reason`, `x_used`, and `y_used` are included with derived export fields.
+
 ## Streamlit Community Cloud
 
 Recommended defaults:

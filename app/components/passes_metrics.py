@@ -4,11 +4,9 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from app.components.attack_channels import PITCH_LENGTH, attack_channel_from_y
+
 PROGRESSIVE_THRESHOLD_DEFAULT = 10.0
-PITCH_LENGTH = 120.0
-PITCH_WIDTH = 80.0
-LEFT_CHANNEL_MAX = PITCH_WIDTH / 3.0
-RIGHT_CHANNEL_MIN = 2.0 * PITCH_WIDTH / 3.0
 
 
 def _as_text(series: pd.Series) -> pd.Series:
@@ -44,12 +42,7 @@ def progressive_pass_mask(pass_df: pd.DataFrame, threshold: float = PROGRESSIVE_
 
 
 def attack_channel(end_y: pd.Series) -> pd.Series:
-    y = pd.to_numeric(end_y, errors="coerce")
-    out = pd.Series("Unknown", index=end_y.index, dtype="string")
-    out = out.mask(y < LEFT_CHANNEL_MAX, "Left")
-    out = out.mask((y >= LEFT_CHANNEL_MAX) & (y <= RIGHT_CHANNEL_MIN), "Centre")
-    out = out.mask(y > RIGHT_CHANNEL_MIN, "Right")
-    return out
+    return attack_channel_from_y(end_y)
 
 
 def with_pass_features(pass_df: pd.DataFrame, threshold: float = PROGRESSIVE_THRESHOLD_DEFAULT) -> tuple[pd.DataFrame, bool]:
@@ -59,7 +52,8 @@ def with_pass_features(pass_df: pd.DataFrame, threshold: float = PROGRESSIVE_THR
     out["is_progressive"] = progressive_pass_mask(out, threshold=threshold).fillna(False).astype(bool)
     out["is_successful_progressive"] = (out["is_completed"] & out["is_progressive"]).astype(bool)
     if "pass_end_location_y" in out.columns:
-        out["attack_channel"] = attack_channel(out["pass_end_location_y"])
+        x_ref = pd.to_numeric(out["pass_end_location_x"], errors="coerce") if "pass_end_location_x" in out.columns else None
+        out["attack_channel"] = attack_channel_from_y(out["pass_end_location_y"], x=x_ref)
     else:
         out["attack_channel"] = "Unknown"
     if {"location_x", "pass_end_location_x"}.issubset(out.columns):
@@ -124,4 +118,3 @@ def top_progressive_passers(pass_df: pd.DataFrame, top_n: int = 3) -> pd.DataFra
     agg["avg_progressive_gain"] = pd.to_numeric(agg["avg_progressive_gain"], errors="coerce").fillna(0.0).round(1)
     agg = agg.sort_values(["successful_progressive", "progressive_completion_pct", "avg_progressive_gain"], ascending=[False, False, False])
     return agg.head(int(top_n)).reset_index(drop=True)
-
