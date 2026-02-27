@@ -266,18 +266,7 @@ def _render_stats_section(
         st.error(str(err))
 
     st.markdown('<div class="section-title">Match Stats</div>', unsafe_allow_html=True)
-    shot_metric_tokens = {"shot", "xg", "goal"}
-    filtered_metrics = {
-        label: values
-        for label, values in stats_payload.get("metrics", {}).items()
-        if not any(token in str(label).strip().lower() for token in shot_metric_tokens)
-    }
-    if filtered_metrics:
-        stats_no_shots = dict(stats_payload)
-        stats_no_shots["metrics"] = filtered_metrics
-        render_match_stats_panel(stats_no_shots, filtered=apply_stats_filters)
-    else:
-        st.info("Shot-related match stats are shown in Offensive.")
+    render_match_stats_panel(stats_payload, filtered=apply_stats_filters)
 
     with st.spinner("Loading lineup context..."):
         lineup_events = get_lineup_events(match_id=match_id)
