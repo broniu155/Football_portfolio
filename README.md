@@ -144,3 +144,21 @@ To regenerate model files locally:
 python src/etl.py --input-dir data_raw --output-dir data_processed --no-append --force
 python src/export_star_schema.py --input-dir data_processed --output-dir data_model --format parquet
 ```
+
+## Live Pitch Replay (Beta)
+
+Match Report -> Analysis View -> Transitions now includes a collapsed **Live Pitch Replay (Beta)** block.
+
+- Base mode uses event coordinates from `fact_events` (ball, actor, and optional event path).
+- When available, it overlays StatsBomb 360 freeze-frame players from `fact_three_sixty_freeze_frames`.
+- Visible-area polygons are optional and shown only when discoverable (for example from local `data_processed/three_sixty_visible_area`).
+
+Coverage note in UI:
+
+- `Events-only`: replay animates event actor/ball without 360 context.
+- `Events+360`: replay includes freeze-frame overlays.
+
+Known limitations:
+
+- This is not continuous tracking data; frames are event-tied snapshots.
+- Animation interpolates between event start/end points and does not reconstruct full off-ball movement.

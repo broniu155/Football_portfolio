@@ -36,9 +36,11 @@ try:
     )
     from app.components.model_views import get_shots_view
     from app.components.passes import get_filtered_events, render_passes_section
+    from app.components.replay_model import build_replay_segments
     from app.components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from app.components.ui import setup_page
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
+    from app.visualizations.pitch_replay import build_replay_figure
 except (ModuleNotFoundError, KeyError):
     from components.analysis_navigation import render_analysis_nav
     from components.analysis_registry import OFFENSIVE_COMPARISON_METRICS, classify_analysis_groups
@@ -63,9 +65,11 @@ except (ModuleNotFoundError, KeyError):
     )
     from components.model_views import get_shots_view
     from components.passes import get_filtered_events, render_passes_section
+    from components.replay_model import build_replay_segments
     from components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from components.ui import setup_page
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
+    from visualizations.pitch_replay import build_replay_figure
 
 setup_page(page_title="Match Report", page_icon=":bar_chart:")
 
@@ -952,7 +956,154 @@ def _render_defensive_panel(events: pd.DataFrame) -> None:
     k8.metric("Fouls committed", fouls)
 
 
-def _render_transitions_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+def _clock_seconds_to_label(value: int) -> str:
+    minutes = max(0, int(value)) // 60
+    seconds = max(0, int(value)) % 60
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _render_live_pitch_replay(
+    match_id: int,
+    data_mode: str,
+    home_team_name: str,
+    away_team_name: str,
+) -> None:
+    with st.expander("Live Pitch Replay (Beta)", expanded=False):
+        st.caption("Event-tied animation on a 120x80 pitch with optional 360 freeze-frame overlays.")
+
+        try:
+            segments, coverage = build_replay_segments(match_id=int(match_id), data_mode=str(data_mode))
+        except Exception as exc:
+            st.warning(f"Replay data could not be loaded for this match: {exc}")
+            return
+
+        if not segments:
+            st.info("No replay segments available for this match.")
+            return
+
+        all_types = sorted({str(seg.get("event_type") or "Unknown") for seg in segments})
+        default_candidates = ["Pass", "Carry", "Shot", "Pressure", "Ball Receipt*", "Ball Receipt"]
+        default_types = [item for item in default_candidates if item in all_types]
+        if not default_types:
+            default_types = all_types[: min(5, len(all_types))]
+
+        control1, control2, control3 = st.columns(3)
+        with control1:
+            team_filter = st.selectbox("Team", options=["Both", "Home", "Away"], index=0)
+        with control2:
+            period_filter = st.selectbox("Period", options=["Both", "1H", "2H"], index=0)
+        with control3:
+            time_window = st.selectbox(
+                "Time window",
+                options=["Full match", "0-15", "15-30", "30-45", "45-60", "60-75", "75-90", "90+"],
+                index=0,
+            )
+
+        event_types = st.multiselect(
+            "Event types",
+            options=all_types,
+            default=default_types,
+            help="Replay includes only selected event types.",
+        )
+        if not event_types:
+            st.warning("Select at least one event type to render the replay.")
+            return
+
+        timing_col, perf_col = st.columns(2)
+        with timing_col:
+            min_clock = int(max(0.0, min(float(seg["t0"]) for seg in segments)))
+            max_clock = int(max(float(seg["t1"]) for seg in segments))
+            clock_range = st.slider(
+                "Match clock range (seconds)",
+                min_value=min_clock,
+                max_value=max_clock,
+                value=(min_clock, max_clock),
+                step=1,
+                format="%d",
+            )
+            st.caption(f"Selected clock: {_clock_seconds_to_label(clock_range[0])} - {_clock_seconds_to_label(clock_range[1])}")
+        with perf_col:
+            fps = st.slider("FPS", min_value=5, max_value=25, value=12, step=1)
+            max_frames = st.slider("Max frames", min_value=200, max_value=2000, value=900, step=100)
+            show_paths = st.toggle("Show event paths", value=True)
+            has_visible_area = bool(coverage.get("has_visible_area"))
+            show_visible_area = False
+            if bool(coverage.get("has_360")):
+                show_visible_area = st.toggle(
+                    "Show 360 visible area",
+                    value=False,
+                    disabled=not has_visible_area,
+                )
+
+        def _window_ok(seg: dict[str, object]) -> bool:
+            t0 = float(seg["t0"])
+            minute_abs = t0 / 60.0
+            if time_window == "Full match":
+                return True
+            if time_window == "0-15":
+                return 0.0 <= minute_abs < 15.0
+            if time_window == "15-30":
+                return 15.0 <= minute_abs < 30.0
+            if time_window == "30-45":
+                return 30.0 <= minute_abs < 45.0
+            if time_window == "45-60":
+                return 45.0 <= minute_abs < 60.0
+            if time_window == "60-75":
+                return 60.0 <= minute_abs < 75.0
+            if time_window == "75-90":
+                return 75.0 <= minute_abs < 90.0
+            return minute_abs >= 90.0
+
+        filtered_segments = []
+        for seg in segments:
+            t0 = float(seg["t0"])
+            if not (float(clock_range[0]) <= t0 <= float(clock_range[1])):
+                continue
+            if seg["event_type"] not in event_types:
+                continue
+            if team_filter == "Home" and str(seg["team"]) != str(home_team_name):
+                continue
+            if team_filter == "Away" and str(seg["team"]) != str(away_team_name):
+                continue
+            if period_filter == "1H" and int(seg.get("period") or 0) != 1:
+                continue
+            if period_filter == "2H" and int(seg.get("period") or 0) != 2:
+                continue
+            if not _window_ok(seg):
+                continue
+            filtered_segments.append(seg)
+
+        if not filtered_segments:
+            st.info("No replay segments match the current filters.")
+            return
+
+        fig = build_replay_figure(
+            segments=filtered_segments,
+            fps=int(fps),
+            max_frames=int(max_frames),
+            show_visible_area=bool(show_visible_area),
+            show_paths=bool(show_paths),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption(
+            "Data coverage: "
+            f"{coverage.get('coverage', 'Events-only')} | "
+            f"Segments: {len(filtered_segments):,} | "
+            "Legend: white=ball, green=actor, blue/orange=360 players."
+        )
+        if not bool(coverage.get("has_360")):
+            st.info("360 snapshots were not found for this match/data mode. Running in Events-only replay.")
+
+
+def _render_transitions_panel(
+    events: pd.DataFrame,
+    shots_df: pd.DataFrame,
+    match_id: int,
+    data_mode: str,
+    home_team_name: str,
+    away_team_name: str,
+) -> None:
     st.markdown('<div class="section-title">Transitions - Turnovers & Counterpress</div>', unsafe_allow_html=True)
     st.caption("Shows what happens immediately after possession changes.")
     if events.empty:
@@ -991,6 +1142,13 @@ def _render_transitions_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> N
     if {"minute", "type_name", "is_turnover", "is_counterpress_regain"}.issubset(transition.columns):
         cols = ["minute", "type_name", "is_turnover", "is_counterpress_regain"]
         st.dataframe(transition[cols].sort_values("minute").head(30), use_container_width=True, hide_index=True)
+
+    _render_live_pitch_replay(
+        match_id=match_id,
+        data_mode=data_mode,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+    )
 
 
 def _render_set_piece_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
@@ -1124,7 +1282,14 @@ elif analysis_view == "Transitions":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
     transition_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
-    _render_transitions_panel(filtered_events, transition_shots)
+    _render_transitions_panel(
+        filtered_events,
+        transition_shots,
+        match_id=int(match_id),
+        data_mode=active_data_mode,
+        home_team_name=home_team_name,
+        away_team_name=away_team_name,
+    )
 elif analysis_view == "Defensive":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     _render_defensive_panel(filtered_events)
