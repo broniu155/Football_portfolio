@@ -24,7 +24,7 @@ try:
         load_dimensions,
         load_match_events,
     )
-    from app.components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
+    from app.components.event_classification import derive_counterpress_regains, derive_event_labels
     from app.components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
     from app.components.filters import top_filters_cascading
     from app.components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
@@ -37,6 +37,7 @@ try:
     from app.components.model_views import get_shots_view
     from app.components.passes import get_filtered_events, render_passes_section
     from app.components.replay_model import build_replay_segments
+    from app.components.set_pieces import render_set_piece_tactical_view
     from app.components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from app.components.ui import setup_page
     from app.components.viz import draw_pitch_figure, draw_split_lineup_pitch
@@ -53,7 +54,7 @@ except (ModuleNotFoundError, KeyError):
         load_dimensions,
         load_match_events,
     )
-    from components.event_classification import SET_PIECE_PATTERNS, derive_counterpress_regains, derive_event_labels
+    from components.event_classification import derive_counterpress_regains, derive_event_labels
     from components.export import ESSENTIAL_COLUMNS, build_match_events_export_df, events_df_to_csv_bytes
     from components.filters import top_filters_cascading
     from components.lineups import get_formation, get_starting_positions, get_starting_xi, get_unmapped_position_names
@@ -66,6 +67,7 @@ except (ModuleNotFoundError, KeyError):
     from components.model_views import get_shots_view
     from components.passes import get_filtered_events, render_passes_section
     from components.replay_model import build_replay_segments
+    from components.set_pieces import render_set_piece_tactical_view
     from components.dribbles import compute_offensive_team_stats, summarize_dribbles, top_dribble_players
     from components.ui import setup_page
     from components.viz import draw_pitch_figure, draw_split_lineup_pitch
@@ -99,6 +101,8 @@ MATCH_EVENT_COLUMNS = [
     "pass_cross",
     "pass_outcome",
     "pass_outcome_name",
+    "pass_recipient_id",
+    "pass_recipient_name",
     "dribble_outcome_id",
     "dribble_outcome_name",
     "dribble_no_touch",
@@ -108,6 +112,8 @@ MATCH_EVENT_COLUMNS = [
     "duel_outcome",
     "shot_outcome_name",
     "shot_outcome_id",
+    "shot_outcome",
+    "shot_type_name",
     "shot_statsbomb_xg",
     "team_name",
     "player_name",
@@ -1152,40 +1158,8 @@ def _render_transitions_panel(
 
 
 def _render_set_piece_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
-    st.markdown('<div class="section-title">Set Pieces</div>', unsafe_allow_html=True)
-    st.caption("Set-piece view for corners, free kicks, throw-ins, goal kicks, and kick-offs.")
-    if events.empty:
-        st.info("No set-piece events in current context.")
-        return
-
-    set_piece_events = events[events["bucket"].astype("string") == "SET_PIECE"] if "bucket" in events.columns else events.copy()
-    set_piece_passes = int(_event_type_mask(set_piece_events, "Pass").sum())
-    set_piece_shots = shots_df[
-        shots_df["play_pattern_name"].astype("string").str.strip().str.lower().isin(SET_PIECE_PATTERNS)
-    ] if "play_pattern_name" in shots_df.columns else shots_df.iloc[0:0].copy()
-    set_piece_goals = (
-        int(set_piece_shots["shot_outcome"].astype("string").str.strip().str.lower().eq("goal").sum())
-        if "shot_outcome" in set_piece_shots.columns
-        else 0
-    )
-    set_piece_xg = float(pd.to_numeric(set_piece_shots["xg"], errors="coerce").fillna(0).sum()) if "xg" in set_piece_shots.columns else 0.0
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Set-piece passes", set_piece_passes)
-    k2.metric("Set-piece shots", int(len(set_piece_shots)))
-    k3.metric("Set-piece xG", f"{set_piece_xg:.2f}")
-    k4.metric("Set-piece goals", set_piece_goals)
-
-    if "play_pattern_name" in set_piece_events.columns:
-        breakdown = (
-            set_piece_events["play_pattern_name"]
-            .astype("string")
-            .value_counts()
-            .rename_axis("set_piece_type")
-            .reset_index(name="events")
-            .head(12)
-        )
-        st.dataframe(breakdown, use_container_width=True, hide_index=True)
+    del shots_df  # Phase 1 set-piece tactical view is derived from events-only pipeline.
+    render_set_piece_tactical_view(events)
 
 
 def _render_more_section() -> None:

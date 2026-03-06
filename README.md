@@ -162,3 +162,31 @@ Known limitations:
 
 - This is not continuous tracking data; frames are event-tied snapshots.
 - Animation interpolates between event start/end points and does not reconstruct full off-ball movement.
+
+## Set Piece Tactical View (Phase 1)
+
+Match Report -> Analysis View -> Set Pieces now includes a tactical view focused on corners and free kicks.
+
+Phase 1 includes:
+
+- rule-based extraction of corner/free-kick events
+- single-event tactical pitch delivery plot
+- aggregate pattern summary (type/side/zone/subtype)
+- simple summary metrics (`set pieces`, `linked shots`, `linked goals`, `short routines %`)
+
+Validation:
+
+```bash
+python -m unittest tests.test_set_pieces -v
+```
+
+Manual verification:
+
+1. Run `streamlit run app/pages/1_Match_Report.py`
+2. Select a match with corner/free-kick events.
+3. Open `Set Pieces` tab.
+4. Confirm:
+   - `Set Piece Type` filter updates the view,
+   - single event delivery line is shown on pitch,
+   - aggregate pattern table + target-zone chart render,
+   - summary metrics change with filter.
