@@ -11,3 +11,5 @@
 - Added dedicated non-UI data enrichment module `app/components/set_piece_data.py` for set-piece extraction and classification.
 - Added `scripts/validate_set_piece_data.py` to print schema and sample rows for a selected match.
 - Added unit tests for the pure data module in `tests/test_set_piece_data.py`.
+- Added sanity-check aggregation helper (`compute_set_piece_sanity_checks`) for classification QA metrics.
+- Added documented rule definitions in `docs/set_piece_metric_definitions.md`.

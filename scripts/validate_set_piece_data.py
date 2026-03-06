@@ -14,7 +14,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from app.components.data import get_active_data_mode, load_match_events
-from app.components.set_piece_data import SET_PIECE_OUTPUT_COLUMNS, extract_set_piece_events
+from app.components.set_piece_data import SET_PIECE_OUTPUT_COLUMNS, compute_set_piece_sanity_checks, extract_set_piece_events
 
 
 DEFAULT_EVENT_COLUMNS = [
@@ -81,6 +81,21 @@ def main() -> None:
     preview = out.head(int(args.sample_rows)).copy()
     with pd.option_context("display.max_columns", None, "display.width", 200):
         print(preview.to_string(index=False))
+
+    checks = compute_set_piece_sanity_checks(out)
+    print("\nSanity checks:")
+    print(f"- total_rows: {checks['total_rows']:,}")
+    print(f"- linked_shot_total: {checks['linked_shot_total']:,}")
+    print(f"- linked_goal_total: {checks['linked_goal_total']:,}")
+
+    print("\nCounts by set_piece_type:")
+    print(checks["counts_by_set_piece_type"].to_string(index=False))
+
+    print("\nSide distribution:")
+    print(checks["side_distribution"].to_string(index=False))
+
+    print("\nTarget zone distribution:")
+    print(checks["target_zone_distribution"].to_string(index=False))
 
 
 if __name__ == "__main__":

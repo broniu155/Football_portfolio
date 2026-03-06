@@ -251,3 +251,53 @@ def extract_set_piece_events(
 
     out = sp[SET_PIECE_OUTPUT_COLUMNS].copy()
     return out.reset_index(drop=True)
+
+
+def _value_counts_table(series: pd.Series, name_col: str, value_col: str) -> pd.DataFrame:
+    if series.empty:
+        return pd.DataFrame(columns=[name_col, value_col])
+    out = (
+        series.astype("string")
+        .fillna("Unknown")
+        .value_counts(dropna=False)
+        .rename_axis(name_col)
+        .reset_index(name=value_col)
+    )
+    return out
+
+
+def compute_set_piece_sanity_checks(set_piece_df: pd.DataFrame) -> dict[str, Any]:
+    """Build interpretable QA tables for rule-based set-piece classification output.
+
+    Returned keys:
+    - total_rows: int
+    - counts_by_set_piece_type: DataFrame[set_piece_type, events]
+    - side_distribution: DataFrame[side, events]
+    - target_zone_distribution: DataFrame[target_zone, events]
+    - linked_shot_total: int
+    - linked_goal_total: int
+    """
+    if set_piece_df.empty:
+        return {
+            "total_rows": 0,
+            "counts_by_set_piece_type": pd.DataFrame(columns=["set_piece_type", "events"]),
+            "side_distribution": pd.DataFrame(columns=["side", "events"]),
+            "target_zone_distribution": pd.DataFrame(columns=["target_zone", "events"]),
+            "linked_shot_total": 0,
+            "linked_goal_total": 0,
+        }
+
+    counts_by_type = _value_counts_table(set_piece_df["set_piece_type"], "set_piece_type", "events")
+    side_dist = _value_counts_table(set_piece_df["side"], "side", "events")
+    zone_dist = _value_counts_table(set_piece_df["target_zone"], "target_zone", "events")
+    linked_shot_total = int(set_piece_df["linked_shot"].fillna(False).astype(bool).sum()) if "linked_shot" in set_piece_df.columns else 0
+    linked_goal_total = int(set_piece_df["linked_goal"].fillna(False).astype(bool).sum()) if "linked_goal" in set_piece_df.columns else 0
+
+    return {
+        "total_rows": int(len(set_piece_df)),
+        "counts_by_set_piece_type": counts_by_type,
+        "side_distribution": side_dist,
+        "target_zone_distribution": zone_dist,
+        "linked_shot_total": linked_shot_total,
+        "linked_goal_total": linked_goal_total,
+    }

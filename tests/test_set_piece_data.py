@@ -8,6 +8,7 @@ from app.components.set_piece_data import (
     classify_delivery_subtype,
     classify_free_kick_type,
     classify_target_zone,
+    compute_set_piece_sanity_checks,
     extract_set_piece_events,
 )
 
@@ -107,6 +108,12 @@ class SetPieceDataTests(unittest.TestCase):
         third = out.iloc[2]
         self.assertEqual(third["set_piece_type"], "Free Kick")
         self.assertTrue(bool(third["short_set_piece"]))
+
+        checks = compute_set_piece_sanity_checks(out)
+        self.assertEqual(checks["total_rows"], 3)
+        self.assertEqual(checks["linked_shot_total"], 1)
+        self.assertEqual(checks["linked_goal_total"], 1)
+        self.assertEqual(int(checks["counts_by_set_piece_type"]["events"].sum()), 3)
 
 
 if __name__ == "__main__":
