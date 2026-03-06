@@ -3,6 +3,7 @@ import unittest
 import pandas as pd
 
 from app.components.set_pieces import (
+    build_set_piece_event_options,
     classify_corner_side,
     classify_free_kick_type,
     classify_target_zone,
@@ -81,7 +82,7 @@ class SetPiecesTests(unittest.TestCase):
             ]
         )
 
-        out = extract_set_piece_events(events, follow_up_seconds=15, next_n_actions=5)
+        out = extract_set_piece_events(events, follow_up_seconds=15, next_n_actions=5, counting_mode="phase_events")
         required_cols = {
             "match_id",
             "team",
@@ -113,6 +114,54 @@ class SetPiecesTests(unittest.TestCase):
         third = out.iloc[2]
         self.assertEqual(third["set_piece_type"], "Free Kick")
         self.assertTrue(bool(third["short_set_piece"]))
+
+    def test_build_event_options_handles_similar_rows_without_collision(self) -> None:
+        events = pd.DataFrame(
+            [
+                {
+                    "event_id": 501,
+                    "match_id": 2001,
+                    "event_index": 100,
+                    "team_id": 1,
+                    "team_name": "North City",
+                    "player_name": "Taker A",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 0,
+                    "location_x": 120,
+                    "location_y": 6,
+                    "pass_end_location_x": 112,
+                    "pass_end_location_y": 38,
+                },
+                {
+                    "event_id": 502,
+                    "match_id": 2001,
+                    "event_index": 101,
+                    "team_id": 1,
+                    "team_name": "North City",
+                    "player_name": "Taker A",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 4,
+                    "location_x": 120,
+                    "location_y": 7,
+                    "pass_end_location_x": 111,
+                    "pass_end_location_y": 39,
+                },
+            ]
+        )
+
+        sp_df = extract_set_piece_events(events, counting_mode="phase_events")
+        options = build_set_piece_event_options(sp_df)
+
+        self.assertEqual(len(options), 2)
+        self.assertEqual(options["event_key"].nunique(), 2)
+        self.assertTrue(options["event_label"].str.contains("id:501").any())
+        self.assertTrue(options["event_label"].str.contains("id:502").any())
 
 
 if __name__ == "__main__":

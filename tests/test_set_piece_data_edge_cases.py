@@ -108,7 +108,7 @@ class SetPieceDataEdgeCaseTests(unittest.TestCase):
         self.assertFalse(bool(out.iloc[0]["linked_shot"]))
         self.assertFalse(bool(out.iloc[0]["linked_goal"]))
 
-    def test_duplicate_and_malformed_rows_do_not_crash(self) -> None:
+    def test_duplicate_and_malformed_rows_do_not_crash_and_are_deduped(self) -> None:
         base = {
             "event_id": "a5",
             "match_id": 1,
@@ -128,8 +128,8 @@ class SetPieceDataEdgeCaseTests(unittest.TestCase):
         }
         malformed = {"event_id": "bad", "match_id": 1, "play_pattern_name": "From Free Kick"}
         events = pd.DataFrame([base, base.copy(), malformed])
-        out = extract_set_piece_events(events)
-        self.assertGreaterEqual(len(out), 2)
+        out = extract_set_piece_events(events, counting_mode="phase_events")
+        self.assertEqual(len(out), 1)
         self.assertTrue((out["set_piece_type"] == "Free Kick").any())
 
     def test_no_free_kicks_in_attacking_zone(self) -> None:

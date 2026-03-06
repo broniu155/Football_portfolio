@@ -1,6 +1,14 @@
 # Changelog
 
 ## 2026-03-06
+- Implemented Set Pieces quality fixes in `Match Report > Set Pieces`:
+  - Added stable `event_key` generation and extraction dedupe guard to prevent duplicate set-piece rows.
+  - Added configurable counting logic with `restart_only` (recommended) vs `phase_events`.
+  - Changed Single Event selector to use unique keys instead of non-unique labels.
+  - Improved event labels for dense match contexts (period, minute, team, taker, type, subtype, id).
+  - Improved filter usability with multi-select filters and taker search.
+  - Scoped select-value truncation CSS to sidebar controls to avoid clipping main-panel set-piece selectors.
+  - Added tests for selector collision prevention, dedupe semantics, and restart-only vs phase counting behavior.
 - Added Phase 1 `Set Piece Tactical View` in `Match Report > Set Pieces`:
   - Extracts corners and free kicks from match events.
   - Adds rule-based tactical enrichment (side, subtype, target zone, short routine flag).

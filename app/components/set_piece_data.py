@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Literal
 
 import pandas as pd
 
 SET_PIECE_OUTPUT_COLUMNS: list[str] = [
     "event_id",
+    "event_key",
     "match_id",
     "team_id",
     "team",
@@ -160,12 +162,71 @@ def _build_empty_output() -> pd.DataFrame:
     return pd.DataFrame(columns=SET_PIECE_OUTPUT_COLUMNS)
 
 
+def _build_event_key(events: pd.DataFrame) -> pd.Series:
+    match_id = _as_text(_coalesce(events, ["match_id"], default="na")).fillna("na")
+    event_id = _as_text(_coalesce(events, ["event_id"], default="")).fillna("")
+    event_index = pd.to_numeric(_coalesce(events, ["event_index", "index"]), errors="coerce")
+    minute = pd.to_numeric(_coalesce(events, ["minute"], default=-1), errors="coerce").fillna(-1).astype(int)
+    second = pd.to_numeric(_coalesce(events, ["second"], default=-1), errors="coerce").fillna(-1).astype(int)
+    team_id = _as_text(_coalesce(events, ["team_id"], default="na")).fillna("na")
+    player_id = _as_text(_coalesce(events, ["player_id"], default="na")).fillna("na")
+    event_type = _norm(_coalesce(events, ["type_name", "type"], default="")).fillna("unknown")
+    play_pattern = _norm(_coalesce(events, ["play_pattern_name", "play_pattern"], default="")).fillna("unknown")
+
+    index_part = event_index.map(lambda value: f"idx:{int(value)}" if pd.notna(value) else "idx:na")
+    fallback = (
+        "m:"
+        + match_id
+        + "|"
+        + index_part.astype("string")
+        + "|"
+        + "t:"
+        + team_id
+        + "|"
+        + "p:"
+        + player_id
+        + "|"
+        + "min:"
+        + minute.astype("string")
+        + ":"
+        + second.astype("string")
+        + "|"
+        + event_type.astype("string")
+        + "|"
+        + play_pattern.astype("string")
+    )
+    out = "m:" + match_id + "|eid:" + event_id
+    out = out.where(event_id.ne(""), fallback)
+    return out.astype("string")
+
+
+def _restart_event_mask(sp: pd.DataFrame) -> pd.Series:
+    if sp.empty:
+        return pd.Series(dtype="bool")
+    ordered = sp.sort_values(["match_id", "team_id", "set_piece_type", "period", "event_index_num", "time_seconds"]).copy()
+    grouped = ordered.groupby(["match_id", "team_id", "set_piece_type", "period"], dropna=False)
+    ordered["prev_index"] = grouped["event_index_num"].shift(1)
+    ordered["prev_time"] = grouped["time_seconds"].shift(1)
+    idx_gap = ordered["event_index_num"] - ordered["prev_index"]
+    time_gap = ordered["time_seconds"] - ordered["prev_time"]
+    # Treat a new restart as separated action groups in index and time space.
+    is_restart = ordered["prev_index"].isna() | idx_gap.gt(2).fillna(True) | time_gap.gt(12).fillna(True)
+    return is_restart.reindex(sp.index).fillna(False).astype(bool)
+
+
 def extract_set_piece_events(
     events: pd.DataFrame,
     include_follow_up: bool = True,
     follow_up_seconds: int = 15,
     next_n_actions: int = 5,
+    counting_mode: Literal["restart_only", "phase_events"] = "restart_only",
 ) -> pd.DataFrame:
+    """Extract set-piece events with optional restart-only counting.
+
+    counting_mode:
+    - restart_only: keep the first action in each short set-piece action sequence.
+    - phase_events: keep all pass/shot rows tagged in set-piece play pattern phases.
+    """
     if events.empty:
         return _build_empty_output()
 
@@ -184,13 +245,20 @@ def extract_set_piece_events(
     play_pattern_norm = _norm(_coalesce(sp, ["play_pattern_name", "play_pattern"], default=""))
     sp["set_piece_type"] = pd.Series("Free Kick", index=sp.index, dtype="string")
     sp.loc[play_pattern_norm.eq("from corner"), "set_piece_type"] = "Corner"
+    sp["event_key"] = _build_event_key(sp)
+    sp = sp.drop_duplicates(subset=["event_key"], keep="first").copy()
+
+    if counting_mode == "restart_only":
+        sp = sp.loc[_restart_event_mask(sp)].copy()
+    elif counting_mode != "phase_events":
+        raise ValueError("counting_mode must be one of {'restart_only', 'phase_events'}")
 
     sp["start_x"] = pd.to_numeric(_coalesce(sp, ["location_x", "x"]), errors="coerce")
     sp["start_y"] = pd.to_numeric(_coalesce(sp, ["location_y", "y"]), errors="coerce")
     sp["end_x"] = pd.to_numeric(_coalesce(sp, ["pass_end_location_x", "shot_end_location_x"]), errors="coerce")
     sp["end_y"] = pd.to_numeric(_coalesce(sp, ["pass_end_location_y", "shot_end_location_y"]), errors="coerce")
-    sp["end_x"] = sp["end_x"].combine_first(sp["start_x"])
-    sp["end_y"] = sp["end_y"].combine_first(sp["start_y"])
+    sp["end_x"] = sp["end_x"].fillna(sp["start_x"])
+    sp["end_y"] = sp["end_y"].fillna(sp["start_y"])
 
     sp["side"] = [
         _resolve_side(str(set_piece_type), start_y)

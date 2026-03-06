@@ -123,35 +123,39 @@ def _follow_up_actions(
 def _apply_filters(sp_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     c1, c2, c3 = st.columns(3)
     c4, c5, c6 = st.columns(3)
-    c7, c8 = st.columns(2)
+    c7, c8, c9 = st.columns(3)
 
-    team_options = ["(All)"] + sorted(sp_df["team"].astype("string").fillna("Unknown").unique().tolist())
-    type_options = ["(All)"] + sorted(sp_df["set_piece_type"].astype("string").fillna("Unknown").unique().tolist())
-    taker_options = ["(All)"] + sorted(sp_df["taker"].astype("string").fillna("Unknown").unique().tolist())
+    team_options = sorted(sp_df["team"].astype("string").fillna("Unknown").unique().tolist())
+    type_options = sorted(sp_df["set_piece_type"].astype("string").fillna("Unknown").unique().tolist())
+    taker_options = sorted(sp_df["taker"].astype("string").fillna("Unknown").unique().tolist())
     half_options = ["(All)", "First Half", "Second Half", "Other"]
-    subtype_options = ["(All)"] + sorted(sp_df["subtype"].astype("string").fillna("Unknown").unique().tolist())
-    outcome_options = ["(All)"] + sorted(sp_df["outcome"].astype("string").fillna("Unknown").unique().tolist())
+    subtype_options = sorted(sp_df["subtype"].astype("string").fillna("Unknown").unique().tolist())
+    outcome_options = sorted(sp_df["outcome"].astype("string").fillna("Unknown").unique().tolist())
 
-    team_filter = c1.selectbox("Team", options=team_options, index=0, key="sp_team_filter")
-    type_filter = c2.selectbox("Set Piece Type", options=type_options, index=0, key="sp_type_filter")
-    taker_filter = c3.selectbox("Taker", options=taker_options, index=0, key="sp_taker_filter")
+    team_filter = c1.multiselect("Team", options=team_options, default=[], key="sp_team_filter")
+    type_filter = c2.multiselect("Set Piece Type", options=type_options, default=[], key="sp_type_filter")
+    taker_filter = c3.multiselect("Taker", options=taker_options, default=[], key="sp_taker_filter")
     half_filter = c4.selectbox("Half", options=half_options, index=0, key="sp_half_filter")
-    subtype_filter = c5.selectbox("Subtype", options=subtype_options, index=0, key="sp_subtype_filter")
-    outcome_filter = c6.selectbox("Outcome", options=outcome_options, index=0, key="sp_outcome_filter")
+    subtype_filter = c5.multiselect("Subtype", options=subtype_options, default=[], key="sp_subtype_filter")
+    outcome_filter = c6.multiselect("Outcome", options=outcome_options, default=[], key="sp_outcome_filter")
     include_follow_up_only = c7.toggle("Include follow-up actions", value=False, key="sp_follow_up_filter")
     show_follow_up_overlay = c8.toggle("Show linked actions on Single Event", value=True, key="sp_follow_up_overlay")
+    taker_search = c9.text_input("Search taker", value="", key="sp_taker_search").strip().lower()
 
     filtered = sp_df.copy()
-    if team_filter != "(All)":
-        filtered = filtered[filtered["team"].astype("string") == team_filter]
-    if type_filter != "(All)":
-        filtered = filtered[filtered["set_piece_type"].astype("string") == type_filter]
-    if taker_filter != "(All)":
-        filtered = filtered[filtered["taker"].astype("string") == taker_filter]
-    if subtype_filter != "(All)":
-        filtered = filtered[filtered["subtype"].astype("string") == subtype_filter]
-    if outcome_filter != "(All)":
-        filtered = filtered[filtered["outcome"].astype("string") == outcome_filter]
+    if team_filter:
+        filtered = filtered[filtered["team"].astype("string").isin(team_filter)]
+    if type_filter:
+        filtered = filtered[filtered["set_piece_type"].astype("string").isin(type_filter)]
+    if taker_filter:
+        filtered = filtered[filtered["taker"].astype("string").isin(taker_filter)]
+    if subtype_filter:
+        filtered = filtered[filtered["subtype"].astype("string").isin(subtype_filter)]
+    if outcome_filter:
+        filtered = filtered[filtered["outcome"].astype("string").isin(outcome_filter)]
+    if taker_search:
+        taker_norm = filtered["taker"].astype("string").fillna("").str.lower()
+        filtered = filtered[taker_norm.str.contains(taker_search, regex=False)]
 
     period_num = pd.to_numeric(filtered["period"], errors="coerce")
     if half_filter == "First Half":
@@ -168,24 +172,58 @@ def _apply_filters(sp_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     return filtered.reset_index(drop=True), bool(show_follow_up_overlay)
 
 
+def build_set_piece_event_options(sp_df: pd.DataFrame) -> pd.DataFrame:
+    if sp_df.empty:
+        return pd.DataFrame(columns=["event_key", "event_label"])
+    work = sp_df.copy()
+    minute = pd.to_numeric(work["minute"], errors="coerce").fillna(-1).astype(int).astype("string")
+    period = pd.to_numeric(work["period"], errors="coerce").fillna(-1).astype(int).astype("string")
+    team = work["team"].astype("string").fillna("Unknown")
+    taker = work["taker"].astype("string").fillna("Unknown")
+    set_piece_type = work["set_piece_type"].astype("string").fillna("Unknown")
+    subtype = work["subtype"].astype("string").fillna("Unknown")
+    event_id = work["event_id"].astype("string").fillna("n/a")
+
+    work["event_label"] = (
+        "P"
+        + period
+        + " "
+        + minute
+        + "' | "
+        + team
+        + " | "
+        + taker
+        + " | "
+        + set_piece_type
+        + " | "
+        + subtype
+        + " | id:"
+        + event_id
+    )
+    return work[["event_key", "event_label"]].drop_duplicates(subset=["event_key"]).reset_index(drop=True)
+
+
 def _render_single_event_view(sp_df: pd.DataFrame, raw_events: pd.DataFrame, show_follow_up_overlay: bool) -> None:
     if sp_df.empty:
         st.info("No set-piece events for current filter selection.")
         return
 
     work = sp_df.copy()
-    work["event_label"] = (
-        work["minute"].astype("string").fillna("?")
-        + "' | "
-        + work["team"].astype("string").fillna("Unknown")
-        + " | "
-        + work["taker"].astype("string").fillna("Unknown")
-        + " | "
-        + work["set_piece_type"].astype("string").fillna("Unknown")
+    options_df = build_set_piece_event_options(work)
+    key_to_label = dict(zip(options_df["event_key"], options_df["event_label"], strict=False))
+    option_keys = options_df["event_key"].tolist()
+    selected_key = st.selectbox(
+        "Select Event",
+        options=option_keys,
+        format_func=lambda key: key_to_label.get(str(key), str(key)),
+        index=0,
+        key="sp_single_event_selector",
     )
-    options = work["event_label"].tolist()
-    selected_label = st.selectbox("Select Event", options=options, index=0, key="sp_single_event_selector")
-    row = work[work["event_label"] == selected_label].iloc[0]
+    selected_row = work[work["event_key"].astype("string") == str(selected_key)]
+    if selected_row.empty:
+        st.warning("Selected event is not available in current filter context.")
+        return
+    row = selected_row.iloc[0]
 
     fig = go.Figure()
     fig.add_trace(
@@ -370,7 +408,22 @@ def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
         st.info("No events in current context.")
         return
 
-    sp_df = extract_set_piece_events(events, include_follow_up=True, follow_up_seconds=15, next_n_actions=5)
+    counting_mode = st.radio(
+        "Set-piece counting logic",
+        options=["restart_only", "phase_events"],
+        index=0,
+        horizontal=True,
+        format_func=lambda value: "Restart events (recommended)" if value == "restart_only" else "All phase events",
+        key="sp_counting_mode",
+    )
+
+    sp_df = extract_set_piece_events(
+        events,
+        include_follow_up=True,
+        follow_up_seconds=15,
+        next_n_actions=5,
+        counting_mode=str(counting_mode),
+    )
     if sp_df.empty:
         st.info("No corner or free-kick events in current context.")
         return

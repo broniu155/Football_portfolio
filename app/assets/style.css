@@ -48,9 +48,9 @@
   color: #e7edf7 !important;
 }
 
-[data-baseweb="select"] [id$="-value"],
-[data-baseweb="select"] [class*="singleValue"],
-[data-baseweb="select"] [class*="ValueContainer"] > div {
+[data-testid="stSidebar"] [data-baseweb="select"] [id$="-value"],
+[data-testid="stSidebar"] [data-baseweb="select"] [class*="singleValue"],
+[data-testid="stSidebar"] [data-baseweb="select"] [class*="ValueContainer"] > div {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -68,8 +68,15 @@
   padding-bottom: 0.2rem !important;
 }
 
-[data-baseweb="select"] [id$="-value"] {
+[data-testid="stSidebar"] [data-baseweb="select"] [id$="-value"] {
   cursor: help;
+}
+
+[data-testid="stMain"] [data-baseweb="select"] [id$="-value"],
+[data-testid="stMain"] [data-baseweb="select"] [class*="singleValue"] {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 [data-testid="stSidebar"] [data-baseweb="select"] input,
