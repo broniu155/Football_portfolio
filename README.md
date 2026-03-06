@@ -170,9 +170,11 @@ Match Report -> Analysis View -> Set Pieces now includes a tactical view focused
 Phase 1 includes:
 
 - rule-based extraction of corner/free-kick events
-- single-event tactical pitch delivery plot
-- aggregate pattern summary (type/side/zone/subtype)
-- simple summary metrics (`set pieces`, `linked shots`, `linked goals`, `short routines %`)
+- analyst filters for team, set-piece type, taker, half, subtype, outcome, and follow-up-only events
+- three tactical tabs: `Single Event`, `Pattern View`, `Summary`
+- single-event pitch with origin, delivery path, end point, and optional linked follow-up overlays
+- pattern pitch showing all filtered deliveries and target areas
+- summary tables/metrics for side/subtype/zone/taker splits and linked shot/goal outcomes
 
 Validation:
 
@@ -193,7 +195,7 @@ Manual verification:
 2. Select a match with corner/free-kick events.
 3. Open `Set Pieces` tab.
 4. Confirm:
-   - `Set Piece Type` filter updates the view,
-   - single event delivery line is shown on pitch,
-   - aggregate pattern table + target-zone chart render,
-   - summary metrics change with filter.
+   - all set-piece filters update results (`team`, `set piece type`, `taker`, `half`, `subtype`, `outcome`, `include follow-up actions`),
+   - `Single Event` tab shows one delivery with origin and endpoint (plus optional linked actions),
+   - `Pattern View` tab shows combined deliveries and target-area markers,
+   - `Summary` tab shows totals, side split, subtype split, target zone split, taker distribution, and linked shot/goal counts.

@@ -13,3 +13,4 @@
 - Added unit tests for the pure data module in `tests/test_set_piece_data.py`.
 - Added sanity-check aggregation helper (`compute_set_piece_sanity_checks`) for classification QA metrics.
 - Added documented rule definitions in `docs/set_piece_metric_definitions.md`.
+- Expanded Match Report `Set Pieces` UI with dedicated filters and three tactical tabs (`Single Event`, `Pattern View`, `Summary`).
