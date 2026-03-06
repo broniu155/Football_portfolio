@@ -8,3 +8,6 @@
   - Adds aggregate pattern view and simple summary metrics.
   - Adds follow-up linkage flags (`linked_shot`, `linked_goal`) using next-actions/time-window heuristics.
 - Added unit tests for set-piece extraction and rule classifications.
+- Added dedicated non-UI data enrichment module `app/components/set_piece_data.py` for set-piece extraction and classification.
+- Added `scripts/validate_set_piece_data.py` to print schema and sample rows for a selected match.
+- Added unit tests for the pure data module in `tests/test_set_piece_data.py`.

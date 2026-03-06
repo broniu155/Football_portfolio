@@ -180,6 +180,13 @@ Validation:
 python -m unittest tests.test_set_pieces -v
 ```
 
+Data-layer validation only (no UI):
+
+```bash
+python -m unittest tests.test_set_piece_data -v
+python scripts/validate_set_piece_data.py --match-id 3895302 --data-mode sample
+```
+
 Manual verification:
 
 1. Run `streamlit run app/pages/1_Match_Report.py`
