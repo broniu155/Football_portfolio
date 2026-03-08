@@ -29,6 +29,7 @@ SET_PIECE_OUTPUT_COLUMNS: list[str] = [
     "linked_shot",
     "linked_goal",
     "short_set_piece",
+    "restart_event_reason",
 ]
 
 
@@ -200,18 +201,23 @@ def _build_event_key(events: pd.DataFrame) -> pd.Series:
     return out.astype("string")
 
 
-def _restart_event_mask(sp: pd.DataFrame) -> pd.Series:
+def _resolve_restart_event_reason(sp: pd.DataFrame) -> pd.Series:
     if sp.empty:
-        return pd.Series(dtype="bool")
+        return pd.Series(dtype="string")
     ordered = sp.sort_values(["match_id", "team_id", "set_piece_type", "period", "event_index_num", "time_seconds"]).copy()
     grouped = ordered.groupby(["match_id", "team_id", "set_piece_type", "period"], dropna=False)
     ordered["prev_index"] = grouped["event_index_num"].shift(1)
     ordered["prev_time"] = grouped["time_seconds"].shift(1)
     idx_gap = ordered["event_index_num"] - ordered["prev_index"]
     time_gap = ordered["time_seconds"] - ordered["prev_time"]
-    # Treat a new restart as separated action groups in index and time space.
-    is_restart = ordered["prev_index"].isna() | idx_gap.gt(2).fillna(True) | time_gap.gt(12).fillna(True)
-    return is_restart.reindex(sp.index).fillna(False).astype(bool)
+    direct_shot = ordered["set_piece_type"].astype("string").eq("Free Kick") & ordered["free_kick_type"].astype("string").eq("Direct")
+
+    reason = pd.Series("Sequence continuation", index=ordered.index, dtype="string")
+    reason = reason.mask(ordered["prev_index"].isna(), "First in sequence")
+    reason = reason.mask(time_gap.gt(12).fillna(False), "Time gap")
+    reason = reason.mask(idx_gap.gt(2).fillna(False), "Index gap")
+    reason = reason.mask(direct_shot.fillna(False), "Direct shot type")
+    return reason.reindex(sp.index).fillna("Sequence continuation").astype("string")
 
 
 def extract_set_piece_events(
@@ -248,11 +254,6 @@ def extract_set_piece_events(
     sp["event_key"] = _build_event_key(sp)
     sp = sp.drop_duplicates(subset=["event_key"], keep="first").copy()
 
-    if counting_mode == "restart_only":
-        sp = sp.loc[_restart_event_mask(sp)].copy()
-    elif counting_mode != "phase_events":
-        raise ValueError("counting_mode must be one of {'restart_only', 'phase_events'}")
-
     sp["start_x"] = pd.to_numeric(_coalesce(sp, ["location_x", "x"]), errors="coerce")
     sp["start_y"] = pd.to_numeric(_coalesce(sp, ["location_y", "y"]), errors="coerce")
     sp["end_x"] = pd.to_numeric(_coalesce(sp, ["pass_end_location_x", "shot_end_location_x"]), errors="coerce")
@@ -271,6 +272,12 @@ def extract_set_piece_events(
     sp["free_kick_type"] = [classify_free_kick_type(row) for _, row in sp.iterrows()]
     sp["subtype"] = [classify_delivery_subtype(row) for _, row in sp.iterrows()]
     sp["outcome"] = [_resolve_outcome(row) for _, row in sp.iterrows()]
+    sp["restart_event_reason"] = _resolve_restart_event_reason(sp)
+
+    if counting_mode == "restart_only":
+        sp = sp.loc[sp["restart_event_reason"].astype("string").ne("Sequence continuation")].copy()
+    elif counting_mode != "phase_events":
+        raise ValueError("counting_mode must be one of {'restart_only', 'phase_events'}")
 
     sp["team"] = _as_text(_coalesce(sp, ["team_name"], default="Unknown")).fillna("Unknown")
     sp["player"] = _as_text(_coalesce(sp, ["player_name"], default="Unknown")).fillna("Unknown")

@@ -203,6 +203,43 @@ class SetPieceDataEdgeCaseTests(unittest.TestCase):
         self.assertTrue((out["linked_shot"] == False).all())  # noqa: E712
         self.assertTrue((out["linked_goal"] == False).all())  # noqa: E712
 
+    def test_restart_reason_uses_time_gap_when_index_gap_is_small(self) -> None:
+        events = pd.DataFrame(
+            [
+                {
+                    "event_id": "t1",
+                    "match_id": 2,
+                    "event_index": 10,
+                    "team_id": 10,
+                    "team_name": "Team A",
+                    "player_name": "FK Taker",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Free Kick",
+                    "minute": 10,
+                    "second": 0,
+                    "period": 1,
+                },
+                {
+                    "event_id": "t2",
+                    "match_id": 2,
+                    "event_index": 11,
+                    "team_id": 10,
+                    "team_name": "Team A",
+                    "player_name": "FK Taker",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Free Kick",
+                    "minute": 10,
+                    "second": 20,
+                    "period": 1,
+                },
+            ]
+        )
+
+        out = extract_set_piece_events(events, counting_mode="phase_events")
+        reasons = dict(zip(out["event_id"], out["restart_event_reason"], strict=False))
+        self.assertEqual(reasons["t1"], "First in sequence")
+        self.assertEqual(reasons["t2"], "Time gap")
+
 
 if __name__ == "__main__":
     unittest.main()

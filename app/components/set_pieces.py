@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Literal
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -24,6 +25,9 @@ except (ModuleNotFoundError, KeyError):
         compute_set_piece_sanity_checks,
         extract_set_piece_events,
     )
+
+
+PRESET_OPTIONS: tuple[str, ...] = ("(None)", "Attacking FKs", "Corners leading to shots", "Short routines")
 
 
 def _coalesce(df: pd.DataFrame, candidates: list[str], default: Any = pd.NA) -> pd.Series:
@@ -120,10 +124,28 @@ def _follow_up_actions(
     return candidates
 
 
-def _apply_filters(sp_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+def apply_set_piece_preset(sp_df: pd.DataFrame, preset: str) -> pd.DataFrame:
+    if sp_df.empty or preset == "(None)":
+        return sp_df.copy()
+
+    filtered = sp_df.copy()
+    if preset == "Attacking FKs":
+        set_piece_type = filtered["set_piece_type"].astype("string")
+        start_x = pd.to_numeric(filtered["start_x"], errors="coerce")
+        filtered = filtered[set_piece_type.eq("Free Kick") & start_x.ge(80.0).fillna(False)]
+    elif preset == "Corners leading to shots":
+        set_piece_type = filtered["set_piece_type"].astype("string")
+        linked = filtered["linked_shot"].fillna(False).astype(bool) | filtered["linked_goal"].fillna(False).astype(bool)
+        filtered = filtered[set_piece_type.eq("Corner") & linked]
+    elif preset == "Short routines":
+        filtered = filtered[filtered["short_set_piece"].fillna(False).astype(bool)]
+    return filtered.reset_index(drop=True)
+
+
+def _read_filter_state(sp_df: pd.DataFrame) -> tuple[dict[str, Any], bool]:
     c1, c2, c3 = st.columns(3)
     c4, c5, c6 = st.columns(3)
-    c7, c8, c9 = st.columns(3)
+    c7, c8, c9, c10 = st.columns(4)
 
     team_options = sorted(sp_df["team"].astype("string").fillna("Unknown").unique().tolist())
     type_options = sorted(sp_df["set_piece_type"].astype("string").fillna("Unknown").unique().tolist())
@@ -132,17 +154,44 @@ def _apply_filters(sp_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     subtype_options = sorted(sp_df["subtype"].astype("string").fillna("Unknown").unique().tolist())
     outcome_options = sorted(sp_df["outcome"].astype("string").fillna("Unknown").unique().tolist())
 
-    team_filter = c1.multiselect("Team", options=team_options, default=[], key="sp_team_filter")
-    type_filter = c2.multiselect("Set Piece Type", options=type_options, default=[], key="sp_type_filter")
-    taker_filter = c3.multiselect("Taker", options=taker_options, default=[], key="sp_taker_filter")
-    half_filter = c4.selectbox("Half", options=half_options, index=0, key="sp_half_filter")
-    subtype_filter = c5.multiselect("Subtype", options=subtype_options, default=[], key="sp_subtype_filter")
-    outcome_filter = c6.multiselect("Outcome", options=outcome_options, default=[], key="sp_outcome_filter")
-    include_follow_up_only = c7.toggle("Include follow-up actions", value=False, key="sp_follow_up_filter")
-    show_follow_up_overlay = c8.toggle("Show linked actions on Single Event", value=True, key="sp_follow_up_overlay")
-    taker_search = c9.text_input("Search taker", value="", key="sp_taker_search").strip().lower()
+    preset = c1.selectbox("Preset", options=list(PRESET_OPTIONS), index=0, key="sp_preset_filter")
+    team_filter = c2.multiselect("Team", options=team_options, default=[], key="sp_team_filter")
+    type_filter = c3.multiselect("Set Piece Type", options=type_options, default=[], key="sp_type_filter")
+    taker_filter = c4.multiselect("Taker", options=taker_options, default=[], key="sp_taker_filter")
+    half_filter = c5.selectbox("Half", options=half_options, index=0, key="sp_half_filter")
+    subtype_filter = c6.multiselect("Subtype", options=subtype_options, default=[], key="sp_subtype_filter")
+    outcome_filter = c7.multiselect("Outcome", options=outcome_options, default=[], key="sp_outcome_filter")
+    include_follow_up_only = c8.toggle("Include follow-up actions", value=False, key="sp_follow_up_filter")
+    show_follow_up_overlay = c9.toggle("Show linked actions on Single Event", value=True, key="sp_follow_up_overlay")
+    taker_search = c10.text_input("Search taker", value="", key="sp_taker_search").strip().lower()
 
-    filtered = sp_df.copy()
+    state = {
+        "preset": str(preset),
+        "team_filter": team_filter,
+        "type_filter": type_filter,
+        "taker_filter": taker_filter,
+        "half_filter": str(half_filter),
+        "subtype_filter": subtype_filter,
+        "outcome_filter": outcome_filter,
+        "include_follow_up_only": bool(include_follow_up_only),
+        "taker_search": taker_search,
+    }
+    return state, bool(show_follow_up_overlay)
+
+
+def apply_set_piece_filter_state(sp_df: pd.DataFrame, state: dict[str, Any]) -> pd.DataFrame:
+    filtered = apply_set_piece_preset(sp_df, str(state.get("preset", "(None)")))
+    if filtered.empty:
+        return filtered.copy()
+
+    team_filter = state.get("team_filter", [])
+    type_filter = state.get("type_filter", [])
+    taker_filter = state.get("taker_filter", [])
+    subtype_filter = state.get("subtype_filter", [])
+    outcome_filter = state.get("outcome_filter", [])
+    taker_search = str(state.get("taker_search", "")).strip().lower()
+    half_filter = str(state.get("half_filter", "(All)"))
+
     if team_filter:
         filtered = filtered[filtered["team"].astype("string").isin(team_filter)]
     if type_filter:
@@ -165,11 +214,11 @@ def _apply_filters(sp_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     elif half_filter == "Other":
         filtered = filtered[~period_num.isin([1, 2])]
 
-    if include_follow_up_only:
+    if bool(state.get("include_follow_up_only", False)):
         linked = filtered["linked_shot"].fillna(False).astype(bool) | filtered["linked_goal"].fillna(False).astype(bool)
         filtered = filtered[linked]
 
-    return filtered.reset_index(drop=True), bool(show_follow_up_overlay)
+    return filtered.reset_index(drop=True)
 
 
 def build_set_piece_event_options(sp_df: pd.DataFrame) -> pd.DataFrame:
@@ -201,6 +250,32 @@ def build_set_piece_event_options(sp_df: pd.DataFrame) -> pd.DataFrame:
         + event_id
     )
     return work[["event_key", "event_label"]].drop_duplicates(subset=["event_key"]).reset_index(drop=True)
+
+
+def build_set_piece_compare_table(restart_df: pd.DataFrame, phase_df: pd.DataFrame) -> pd.DataFrame:
+    if restart_df.empty and phase_df.empty:
+        return pd.DataFrame(columns=["team", "set_piece_type", "restart_only_events", "phase_events", "delta"])
+
+    def _team_type_counts(df: pd.DataFrame, value_name: str) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame(columns=["team", "set_piece_type", value_name])
+        return (
+            df.assign(
+                team=df["team"].astype("string").fillna("Unknown"),
+                set_piece_type=df["set_piece_type"].astype("string").fillna("Unknown"),
+            )
+            .groupby(["team", "set_piece_type"], dropna=False)
+            .size()
+            .reset_index(name=value_name)
+        )
+
+    restart_counts = _team_type_counts(restart_df, "restart_only_events")
+    phase_counts = _team_type_counts(phase_df, "phase_events")
+    merged = restart_counts.merge(phase_counts, on=["team", "set_piece_type"], how="outer").fillna(0)
+    merged["restart_only_events"] = pd.to_numeric(merged["restart_only_events"], errors="coerce").fillna(0).astype(int)
+    merged["phase_events"] = pd.to_numeric(merged["phase_events"], errors="coerce").fillna(0).astype(int)
+    merged["delta"] = merged["phase_events"] - merged["restart_only_events"]
+    return merged.sort_values(["team", "set_piece_type"]).reset_index(drop=True)
 
 
 def _render_single_event_view(sp_df: pd.DataFrame, raw_events: pd.DataFrame, show_follow_up_overlay: bool) -> None:
@@ -349,7 +424,12 @@ def _render_pattern_view(sp_df: pd.DataFrame) -> None:
     st.caption("Lines show delivery direction; markers show delivery end points (target areas).")
 
 
-def _render_summary_view(sp_df: pd.DataFrame) -> None:
+def _render_summary_view(
+    sp_df: pd.DataFrame,
+    restart_filtered: pd.DataFrame,
+    phase_filtered: pd.DataFrame,
+    counting_mode: Literal["restart_only", "phase_events"],
+) -> None:
     if sp_df.empty:
         st.info("No summary available for current filter selection.")
         return
@@ -397,8 +477,44 @@ def _render_summary_view(sp_df: pd.DataFrame) -> None:
         st.markdown("**Taker distribution**")
         st.dataframe(taker_dist, use_container_width=True, hide_index=True)
 
+    reason_dist = (
+        sp_df["restart_event_reason"]
+        .astype("string")
+        .fillna("Unknown")
+        .value_counts()
+        .rename_axis("restart_event_reason")
+        .reset_index(name="events")
+    )
+    st.markdown("**Restart event reason**")
+    st.dataframe(reason_dist, use_container_width=True, hide_index=True)
+
     st.markdown("**Set-piece type counts**")
     st.dataframe(checks["counts_by_set_piece_type"], use_container_width=True, hide_index=True)
+
+    compare_enabled = st.toggle("Compare restart-only vs phase-events per team", value=False, key="sp_compare_modes")
+    if compare_enabled:
+        compare_table = build_set_piece_compare_table(restart_filtered, phase_filtered)
+        if compare_table.empty:
+            st.info("No comparison data available for current filters.")
+            return
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**`restart_only` distribution**")
+            st.dataframe(
+                compare_table[["team", "set_piece_type", "restart_only_events"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        with right:
+            st.markdown("**`phase_events` distribution**")
+            st.dataframe(
+                compare_table[["team", "set_piece_type", "phase_events", "delta"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.caption(
+            f"Comparison uses the same preset and manual filters while the active mode stays `{counting_mode}`."
+        )
 
 
 def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
@@ -424,11 +540,28 @@ def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
         next_n_actions=5,
         counting_mode=str(counting_mode),
     )
+    restart_df = extract_set_piece_events(
+        events,
+        include_follow_up=True,
+        follow_up_seconds=15,
+        next_n_actions=5,
+        counting_mode="restart_only",
+    )
+    phase_df = extract_set_piece_events(
+        events,
+        include_follow_up=True,
+        follow_up_seconds=15,
+        next_n_actions=5,
+        counting_mode="phase_events",
+    )
     if sp_df.empty:
         st.info("No corner or free-kick events in current context.")
         return
 
-    filtered, show_follow_up_overlay = _apply_filters(sp_df)
+    filter_state, show_follow_up_overlay = _read_filter_state(sp_df)
+    filtered = apply_set_piece_filter_state(sp_df, filter_state)
+    restart_filtered = apply_set_piece_filter_state(restart_df, filter_state)
+    phase_filtered = apply_set_piece_filter_state(phase_df, filter_state)
     if filtered.empty:
         st.info("No set-piece rows match current filters.")
         return
@@ -439,4 +572,9 @@ def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
     with tab_pattern:
         _render_pattern_view(filtered)
     with tab_summary:
-        _render_summary_view(filtered)
+        _render_summary_view(
+            filtered,
+            restart_filtered=restart_filtered,
+            phase_filtered=phase_filtered,
+            counting_mode=str(counting_mode),
+        )

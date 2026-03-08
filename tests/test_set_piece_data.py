@@ -186,9 +186,49 @@ class SetPieceDataTests(unittest.TestCase):
         restart_only = extract_set_piece_events(events, counting_mode="restart_only")
         phase_events = extract_set_piece_events(events, counting_mode="phase_events")
 
-        self.assertEqual(len(restart_only), 2)
+        self.assertEqual(len(restart_only), 3)
         self.assertEqual(len(phase_events), 4)
         self.assertTrue(set(restart_only["event_id"].tolist()).issubset(set(phase_events["event_id"].tolist())))
+        self.assertEqual(restart_only["restart_event_reason"].tolist(), ["First in sequence", "Direct shot type", "Index gap"])
+
+    def test_restart_reason_direct_shot_type_takes_priority(self) -> None:
+        events = pd.DataFrame(
+            [
+                {
+                    "event_id": 401,
+                    "match_id": 8,
+                    "event_index": 10,
+                    "team_id": 1,
+                    "team_name": "Alpha",
+                    "player_id": 11,
+                    "player_name": "FK Taker",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Free Kick",
+                    "period": 1,
+                    "minute": 5,
+                    "second": 0,
+                },
+                {
+                    "event_id": 402,
+                    "match_id": 8,
+                    "event_index": 11,
+                    "team_id": 1,
+                    "team_name": "Alpha",
+                    "player_id": 12,
+                    "player_name": "Shooter",
+                    "type_name": "Shot",
+                    "play_pattern_name": "From Free Kick",
+                    "period": 1,
+                    "minute": 5,
+                    "second": 4,
+                },
+            ]
+        )
+
+        phase_events = extract_set_piece_events(events, counting_mode="phase_events")
+        reasons = dict(zip(phase_events["event_id"], phase_events["restart_event_reason"], strict=False))
+        self.assertEqual(reasons[401], "First in sequence")
+        self.assertEqual(reasons[402], "Direct shot type")
 
     def test_dedupe_uses_stable_event_key(self) -> None:
         base = {

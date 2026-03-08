@@ -1,6 +1,11 @@
 # Changelog
 
 ## 2026-03-06
+- Expanded `Match Report > Set Pieces` analyst workflow:
+  - Added explicit `restart_event_reason` classification for restart-only rows and Summary reporting.
+  - Added saved analyst presets for `Attacking FKs`, `Corners leading to shots`, and `Short routines`.
+  - Added side-by-side per-team comparison for `restart_only` vs `phase_events` distributions.
+  - Added tests covering restart reasons, preset filtering, and comparison-table behavior.
 - Implemented Set Pieces quality fixes in `Match Report > Set Pieces`:
   - Added stable `event_key` generation and extraction dedupe guard to prevent duplicate set-piece rows.
   - Added configurable counting logic with `restart_only` (recommended) vs `phase_events`.

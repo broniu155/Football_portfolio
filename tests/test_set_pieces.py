@@ -3,7 +3,11 @@ import unittest
 import pandas as pd
 
 from app.components.set_pieces import (
+    PRESET_OPTIONS,
+    apply_set_piece_filter_state,
+    apply_set_piece_preset,
     build_set_piece_event_options,
+    build_set_piece_compare_table,
     classify_corner_side,
     classify_free_kick_type,
     classify_target_zone,
@@ -162,6 +166,94 @@ class SetPiecesTests(unittest.TestCase):
         self.assertEqual(options["event_key"].nunique(), 2)
         self.assertTrue(options["event_label"].str.contains("id:501").any())
         self.assertTrue(options["event_label"].str.contains("id:502").any())
+
+    def test_saved_presets_filter_expected_rows(self) -> None:
+        sp_df = pd.DataFrame(
+            [
+                {
+                    "team": "Alpha",
+                    "set_piece_type": "Free Kick",
+                    "start_x": 85,
+                    "linked_shot": False,
+                    "linked_goal": False,
+                    "short_set_piece": False,
+                    "taker": "A",
+                    "period": 1,
+                    "subtype": "Indirect routine",
+                    "outcome": "Complete",
+                },
+                {
+                    "team": "Alpha",
+                    "set_piece_type": "Corner",
+                    "start_x": 120,
+                    "linked_shot": True,
+                    "linked_goal": False,
+                    "short_set_piece": False,
+                    "taker": "B",
+                    "period": 1,
+                    "subtype": "Box delivery",
+                    "outcome": "Complete",
+                },
+                {
+                    "team": "Beta",
+                    "set_piece_type": "Free Kick",
+                    "start_x": 60,
+                    "linked_shot": False,
+                    "linked_goal": False,
+                    "short_set_piece": True,
+                    "taker": "C",
+                    "period": 2,
+                    "subtype": "Short routine",
+                    "outcome": "Complete",
+                },
+            ]
+        )
+
+        self.assertEqual(PRESET_OPTIONS[1:], ("Attacking FKs", "Corners leading to shots", "Short routines"))
+        self.assertEqual(len(apply_set_piece_preset(sp_df, "Attacking FKs")), 1)
+        self.assertEqual(len(apply_set_piece_preset(sp_df, "Corners leading to shots")), 1)
+        self.assertEqual(len(apply_set_piece_preset(sp_df, "Short routines")), 1)
+
+        state = {
+            "preset": "Corners leading to shots",
+            "team_filter": [],
+            "type_filter": [],
+            "taker_filter": [],
+            "half_filter": "(All)",
+            "subtype_filter": [],
+            "outcome_filter": [],
+            "include_follow_up_only": False,
+            "taker_search": "",
+        }
+        filtered = apply_set_piece_filter_state(sp_df, state)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered.iloc[0]["set_piece_type"], "Corner")
+
+    def test_compare_table_aligns_restart_and_phase_counts(self) -> None:
+        restart_df = pd.DataFrame(
+            [
+                {"team": "Alpha", "set_piece_type": "Free Kick"},
+                {"team": "Alpha", "set_piece_type": "Corner"},
+            ]
+        )
+        phase_df = pd.DataFrame(
+            [
+                {"team": "Alpha", "set_piece_type": "Free Kick"},
+                {"team": "Alpha", "set_piece_type": "Free Kick"},
+                {"team": "Alpha", "set_piece_type": "Corner"},
+                {"team": "Beta", "set_piece_type": "Corner"},
+            ]
+        )
+
+        compare = build_set_piece_compare_table(restart_df, phase_df)
+        alpha_fk = compare[(compare["team"] == "Alpha") & (compare["set_piece_type"] == "Free Kick")].iloc[0]
+        beta_corner = compare[(compare["team"] == "Beta") & (compare["set_piece_type"] == "Corner")].iloc[0]
+
+        self.assertEqual(int(alpha_fk["restart_only_events"]), 1)
+        self.assertEqual(int(alpha_fk["phase_events"]), 2)
+        self.assertEqual(int(alpha_fk["delta"]), 1)
+        self.assertEqual(int(beta_corner["restart_only_events"]), 0)
+        self.assertEqual(int(beta_corner["phase_events"]), 1)
 
 
 if __name__ == "__main__":
