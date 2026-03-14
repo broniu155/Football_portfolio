@@ -14,7 +14,9 @@ try:
         classify_free_kick_type,
         classify_target_zone,
         compute_set_piece_sanity_checks,
+        extract_defensive_corner_clearances,
         extract_set_piece_events,
+        summarize_defensive_corner_clearances,
     )
 except (ModuleNotFoundError, KeyError):
     from components.set_piece_data import (
@@ -23,7 +25,9 @@ except (ModuleNotFoundError, KeyError):
         classify_free_kick_type,
         classify_target_zone,
         compute_set_piece_sanity_checks,
+        extract_defensive_corner_clearances,
         extract_set_piece_events,
+        summarize_defensive_corner_clearances,
     )
 
 
@@ -42,6 +46,15 @@ def _coalesce(df: pd.DataFrame, candidates: list[str], default: Any = pd.NA) -> 
 
 def _norm(series: pd.Series) -> pd.Series:
     return series.astype("string").str.strip().str.lower()
+
+
+def _apply_context_filters(events: pd.DataFrame, team_id: int | None, player_id: int | None) -> pd.DataFrame:
+    out = events.copy()
+    if team_id is not None and "team_id" in out.columns:
+        out = out[pd.to_numeric(out["team_id"], errors="coerce") == int(team_id)]
+    if player_id is not None and "player_id" in out.columns:
+        out = out[pd.to_numeric(out["player_id"], errors="coerce") == int(player_id)]
+    return out
 
 
 def _pitch_shapes(line_color: str = "#6c8f78") -> list[dict[str, Any]]:
@@ -276,6 +289,32 @@ def build_set_piece_compare_table(restart_df: pd.DataFrame, phase_df: pd.DataFra
     merged["phase_events"] = pd.to_numeric(merged["phase_events"], errors="coerce").fillna(0).astype(int)
     merged["delta"] = merged["phase_events"] - merged["restart_only_events"]
     return merged.sort_values(["team", "set_piece_type"]).reset_index(drop=True)
+
+
+def apply_corner_exit_filters(
+    clearance_df: pd.DataFrame,
+    team_filter: list[str] | None = None,
+    half_filter: str = "(All)",
+    winner_filter: str = "(All)",
+) -> pd.DataFrame:
+    if clearance_df.empty:
+        return clearance_df.copy()
+
+    filtered = clearance_df.copy()
+    if team_filter:
+        filtered = filtered[filtered["team"].astype("string").isin(team_filter)]
+
+    period_num = pd.to_numeric(filtered["period"], errors="coerce")
+    if half_filter == "First Half":
+        filtered = filtered[period_num.eq(1)]
+    elif half_filter == "Second Half":
+        filtered = filtered[period_num.eq(2)]
+    elif half_filter == "Other":
+        filtered = filtered[~period_num.isin([1, 2])]
+
+    if winner_filter != "(All)":
+        filtered = filtered[filtered["first_ball_winner"].astype("string") == winner_filter]
+    return filtered.reset_index(drop=True)
 
 
 def _render_single_event_view(sp_df: pd.DataFrame, raw_events: pd.DataFrame, show_follow_up_overlay: bool) -> None:
@@ -517,12 +556,137 @@ def _render_summary_view(
         )
 
 
-def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
+def _render_corner_exit_view(clearance_df: pd.DataFrame) -> None:
+    st.markdown("**Defensive corner exit lanes**")
+    st.caption(
+        "Lane is estimated from the first post-clearance actionable event with a valid location. "
+        "Use this to position rest-defense players where corners are most often cleared."
+    )
+    if clearance_df.empty:
+        st.info("No defensive corner clearances found in the current context.")
+        return
+
+    team_options = sorted(clearance_df["team"].astype("string").fillna("Unknown").unique().tolist())
+    c1, c2, c3 = st.columns(3)
+    team_filter = c1.multiselect("Defending team", options=team_options, default=[], key="sp_corner_exit_team_filter")
+    half_filter = c2.selectbox(
+        "Half",
+        options=["(All)", "First Half", "Second Half", "Other"],
+        index=0,
+        key="sp_corner_exit_half_filter",
+    )
+    winner_filter = c3.selectbox(
+        "First ball after clearance",
+        options=["(All)", "Defending team", "Attacking team", "Unknown"],
+        index=0,
+        key="sp_corner_exit_winner_filter",
+    )
+
+    filtered = apply_corner_exit_filters(
+        clearance_df,
+        team_filter=team_filter,
+        half_filter=str(half_filter),
+        winner_filter=str(winner_filter),
+    )
+    if filtered.empty:
+        st.info("No defensive corner clearances match the current filters.")
+        return
+
+    summary = summarize_defensive_corner_clearances(filtered)
+    total_clearances = int(len(filtered))
+    located_exits = int(filtered["exit_lane"].astype("string").ne("Unknown").sum())
+    defending_team_first_ball = int(filtered["first_ball_winner"].astype("string").eq("Defending team").sum())
+    defending_team_first_ball_pct = (100.0 * defending_team_first_ball / total_clearances) if total_clearances else 0.0
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Corner clearances", total_clearances)
+    m2.metric("Located exit lanes", f"{located_exits}/{total_clearances}")
+    m3.metric("Defenders won first ball", f"{defending_team_first_ball_pct:.1f}%")
+
+    lane_colors = {"Left": "#38bdf8", "Centre": "#f59e0b", "Right": "#22c55e", "Unknown": "#94a3b8"}
+    bar = go.Figure(
+        data=[
+            go.Bar(
+                x=summary["share_pct"],
+                y=summary["exit_lane"],
+                orientation="h",
+                marker=dict(color=[lane_colors.get(str(lane), "#94a3b8") for lane in summary["exit_lane"]]),
+                text=summary["share_pct"].map(lambda value: f"{float(value):.1f}%"),
+                textposition="outside",
+                hovertemplate="%{y}: %{x:.1f}%<extra></extra>",
+            )
+        ]
+    )
+    bar.update_layout(
+        title="Where defenders clear the first ball from corners",
+        paper_bgcolor="#0b1220",
+        plot_bgcolor="#111a2b",
+        font=dict(color="#e7edf7"),
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=360,
+        xaxis=dict(title="Share of clearances (%)", range=[0, max(100.0, float(summary["share_pct"].max()) + 5.0)]),
+        yaxis=dict(title="Exit lane"),
+    )
+
+    left, right = st.columns([1.4, 1.0])
+    with left:
+        st.plotly_chart(bar, use_container_width=True)
+    with right:
+        st.markdown("**Lane summary**")
+        st.dataframe(
+            summary.rename(
+                columns={
+                    "exit_lane": "Exit lane",
+                    "clearances": "Clearances",
+                    "share_pct": "Share %",
+                    "defending_team_first_ball": "Defenders first ball",
+                    "defending_team_first_ball_pct": "Defenders first ball %",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    detail = filtered[
+        [
+            "minute",
+            "team",
+            "player",
+            "exit_lane",
+            "first_ball_winner",
+            "exit_event_type",
+            "exit_team",
+            "seconds_to_first_action",
+        ]
+    ].copy()
+    detail = detail.rename(
+        columns={
+            "minute": "Minute",
+            "team": "Defending team",
+            "player": "Clearance player",
+            "exit_lane": "Exit lane",
+            "first_ball_winner": "First ball winner",
+            "exit_event_type": "Next action",
+            "exit_team": "Next action team",
+            "seconds_to_first_action": "Seconds",
+        }
+    )
+    st.markdown("**Clearance log**")
+    st.dataframe(detail, use_container_width=True, hide_index=True)
+
+
+def render_set_piece_tactical_view(
+    events: pd.DataFrame,
+    context_team_id: int | None = None,
+    context_player_id: int | None = None,
+) -> None:
     st.markdown('<div class="section-title">Set Piece Tactical View</div>', unsafe_allow_html=True)
-    st.caption("Tactical analysis for corners and free kicks.")
+    st.caption("Tactical analysis for attacking set pieces and defensive corner exits.")
     if events.empty:
         st.info("No events in current context.")
         return
+
+    analysis_events = _apply_context_filters(events, team_id=context_team_id, player_id=context_player_id)
 
     counting_mode = st.radio(
         "Set-piece counting logic",
@@ -534,39 +698,47 @@ def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
     )
 
     sp_df = extract_set_piece_events(
-        events,
+        analysis_events,
         include_follow_up=True,
         follow_up_seconds=15,
         next_n_actions=5,
         counting_mode=str(counting_mode),
     )
     restart_df = extract_set_piece_events(
-        events,
+        analysis_events,
         include_follow_up=True,
         follow_up_seconds=15,
         next_n_actions=5,
         counting_mode="restart_only",
     )
     phase_df = extract_set_piece_events(
-        events,
+        analysis_events,
         include_follow_up=True,
         follow_up_seconds=15,
         next_n_actions=5,
         counting_mode="phase_events",
     )
-    if sp_df.empty:
-        st.info("No corner or free-kick events in current context.")
-        return
+    clearance_df = extract_defensive_corner_clearances(
+        events,
+        follow_up_seconds=12,
+        next_n_actions=6,
+        team_id=context_team_id,
+        player_id=context_player_id,
+    )
 
-    filter_state, show_follow_up_overlay = _read_filter_state(sp_df)
-    filtered = apply_set_piece_filter_state(sp_df, filter_state)
-    restart_filtered = apply_set_piece_filter_state(restart_df, filter_state)
-    phase_filtered = apply_set_piece_filter_state(phase_df, filter_state)
-    if filtered.empty:
-        st.info("No set-piece rows match current filters.")
-        return
+    show_follow_up_overlay = False
+    filtered = sp_df.copy()
+    restart_filtered = restart_df.copy()
+    phase_filtered = phase_df.copy()
+    if not sp_df.empty:
+        filter_state, show_follow_up_overlay = _read_filter_state(sp_df)
+        filtered = apply_set_piece_filter_state(sp_df, filter_state)
+        restart_filtered = apply_set_piece_filter_state(restart_df, filter_state)
+        phase_filtered = apply_set_piece_filter_state(phase_df, filter_state)
 
-    tab_single, tab_pattern, tab_summary = st.tabs(["Single Event", "Pattern View", "Summary"])
+    tab_single, tab_pattern, tab_summary, tab_corner_exits = st.tabs(
+        ["Single Event", "Pattern View", "Summary", "Corner Exits"]
+    )
     with tab_single:
         _render_single_event_view(filtered, raw_events=events, show_follow_up_overlay=show_follow_up_overlay)
     with tab_pattern:
@@ -578,3 +750,5 @@ def render_set_piece_tactical_view(events: pd.DataFrame) -> None:
             phase_filtered=phase_filtered,
             counting_mode=str(counting_mode),
         )
+    with tab_corner_exits:
+        _render_corner_exit_view(clearance_df)

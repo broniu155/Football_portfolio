@@ -163,18 +163,20 @@ Known limitations:
 - This is not continuous tracking data; frames are event-tied snapshots.
 - Animation interpolates between event start/end points and does not reconstruct full off-ball movement.
 
-## Set Piece Tactical View (Phase 1)
+## Set Piece Tactical View
 
 Match Report -> Analysis View -> Set Pieces now includes a tactical view focused on corners and free kicks.
 
-Phase 1 includes:
+Current scope includes:
 
 - rule-based extraction of corner/free-kick events
 - analyst filters for team, set-piece type, taker, half, subtype, outcome, and follow-up-only events
-- three tactical tabs: `Single Event`, `Pattern View`, `Summary`
+- four tactical tabs: `Single Event`, `Pattern View`, `Summary`, `Corner Exits`
 - single-event pitch with origin, delivery path, end point, and optional linked follow-up overlays
 - pattern pitch showing all filtered deliveries and target areas
 - summary tables/metrics for side/subtype/zone/taker splits and linked shot/goal outcomes
+- defensive-corner clearance analysis showing which exit lane (`Left`, `Centre`, `Right`) defenders use most often
+- lane-percentage summaries plus first-ball-win rates after each defensive corner clearance
 
 Validation:
 
@@ -198,4 +200,5 @@ Manual verification:
    - all set-piece filters update results (`team`, `set piece type`, `taker`, `half`, `subtype`, `outcome`, `include follow-up actions`),
    - `Single Event` tab shows one delivery with origin and endpoint (plus optional linked actions),
    - `Pattern View` tab shows combined deliveries and target-area markers,
-   - `Summary` tab shows totals, side split, subtype split, target zone split, taker distribution, and linked shot/goal counts.
+   - `Summary` tab shows totals, side split, subtype split, target zone split, taker distribution, and linked shot/goal counts,
+   - `Corner Exits` tab shows defensive-corner exit-lane percentages and first-ball-win outcomes.

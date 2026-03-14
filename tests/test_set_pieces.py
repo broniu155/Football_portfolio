@@ -4,6 +4,7 @@ import pandas as pd
 
 from app.components.set_pieces import (
     PRESET_OPTIONS,
+    apply_corner_exit_filters,
     apply_set_piece_filter_state,
     apply_set_piece_preset,
     build_set_piece_event_options,
@@ -254,6 +255,34 @@ class SetPiecesTests(unittest.TestCase):
         self.assertEqual(int(alpha_fk["delta"]), 1)
         self.assertEqual(int(beta_corner["restart_only_events"]), 0)
         self.assertEqual(int(beta_corner["phase_events"]), 1)
+
+    def test_corner_exit_filters_scope_team_half_and_first_ball_winner(self) -> None:
+        clearance_df = pd.DataFrame(
+            [
+                {"team": "Alpha", "period": 1, "first_ball_winner": "Defending team"},
+                {"team": "Alpha", "period": 2, "first_ball_winner": "Attacking team"},
+                {"team": "Beta", "period": 2, "first_ball_winner": "Defending team"},
+                {"team": "Beta", "period": 3, "first_ball_winner": "Unknown"},
+            ]
+        )
+
+        first_half_alpha = apply_corner_exit_filters(
+            clearance_df,
+            team_filter=["Alpha"],
+            half_filter="First Half",
+            winner_filter="(All)",
+        )
+        self.assertEqual(len(first_half_alpha), 1)
+        self.assertEqual(first_half_alpha.iloc[0]["team"], "Alpha")
+
+        defending_team_only = apply_corner_exit_filters(
+            clearance_df,
+            team_filter=[],
+            half_filter="Second Half",
+            winner_filter="Defending team",
+        )
+        self.assertEqual(len(defending_team_only), 1)
+        self.assertEqual(defending_team_only.iloc[0]["team"], "Beta")
 
 
 if __name__ == "__main__":

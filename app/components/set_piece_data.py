@@ -32,6 +32,45 @@ SET_PIECE_OUTPUT_COLUMNS: list[str] = [
     "restart_event_reason",
 ]
 
+DEFENSIVE_CORNER_CLEARANCE_OUTPUT_COLUMNS: list[str] = [
+    "event_id",
+    "match_id",
+    "team_id",
+    "team",
+    "player_id",
+    "player",
+    "minute",
+    "period",
+    "clearance_x",
+    "clearance_y",
+    "exit_event_id",
+    "exit_team",
+    "exit_player",
+    "exit_event_type",
+    "exit_x",
+    "exit_y",
+    "exit_lane",
+    "first_ball_winner",
+    "seconds_to_first_action",
+]
+
+_CORNER_CLEARANCE_ACTIONABLE_TYPES = {
+    "ball receipt*",
+    "ball recovery",
+    "block",
+    "carry",
+    "clearance",
+    "dispossessed",
+    "dribble",
+    "duel",
+    "foul committed",
+    "foul won",
+    "interception",
+    "miscontrol",
+    "pass",
+    "shot",
+}
+
 
 def _coalesce(df: pd.DataFrame, candidates: list[str], default: Any = pd.NA) -> pd.Series:
     cols = [c for c in candidates if c in df.columns]
@@ -130,6 +169,17 @@ def classify_delivery_subtype(row: pd.Series) -> str:
     return "Other"
 
 
+def classify_clearance_exit_lane(exit_y: float | int | None) -> str:
+    y = pd.to_numeric(pd.Series([exit_y]), errors="coerce").iloc[0]
+    if pd.isna(y):
+        return "Unknown"
+    if float(y) < 26.67:
+        return "Left"
+    if float(y) > 53.33:
+        return "Right"
+    return "Centre"
+
+
 def _set_piece_mask(events: pd.DataFrame) -> pd.Series:
     play_pattern = _norm(_coalesce(events, ["play_pattern_name", "play_pattern"], default=""))
     return play_pattern.isin({"from corner", "from free kick"})
@@ -161,6 +211,10 @@ def _resolve_outcome(row: pd.Series) -> str:
 
 def _build_empty_output() -> pd.DataFrame:
     return pd.DataFrame(columns=SET_PIECE_OUTPUT_COLUMNS)
+
+
+def _build_empty_clearance_output() -> pd.DataFrame:
+    return pd.DataFrame(columns=DEFENSIVE_CORNER_CLEARANCE_OUTPUT_COLUMNS)
 
 
 def _build_event_key(events: pd.DataFrame) -> pd.Series:
@@ -326,6 +380,149 @@ def extract_set_piece_events(
 
     out = sp[SET_PIECE_OUTPUT_COLUMNS].copy()
     return out.reset_index(drop=True)
+
+
+def extract_defensive_corner_clearances(
+    events: pd.DataFrame,
+    follow_up_seconds: int = 12,
+    next_n_actions: int = 6,
+    team_id: int | None = None,
+    player_id: int | None = None,
+) -> pd.DataFrame:
+    """Extract defensive clearances during corners and estimate their exit lanes.
+
+    Because StatsBomb clearance rows do not carry end coordinates in this model,
+    the exit point is estimated from the first subsequent actionable event with
+    a valid location inside a short event/time window.
+    """
+    if events.empty:
+        return _build_empty_clearance_output()
+
+    work = events.copy()
+    work["event_type_norm"] = _norm(_coalesce(work, ["type_name", "type"], default=""))
+    work["play_pattern_norm"] = _norm(_coalesce(work, ["play_pattern_name", "play_pattern"], default=""))
+    work["event_index_num"] = pd.to_numeric(_coalesce(work, ["event_index", "index"]), errors="coerce")
+    work["minute_num"] = pd.to_numeric(_coalesce(work, ["minute"], default=0), errors="coerce").fillna(0)
+    work["second_num"] = pd.to_numeric(_coalesce(work, ["second"], default=0), errors="coerce").fillna(0)
+    work["time_seconds"] = work["minute_num"] * 60 + work["second_num"]
+    work["team_id_num"] = pd.to_numeric(_coalesce(work, ["team_id"]), errors="coerce")
+    work["player_id_num"] = pd.to_numeric(_coalesce(work, ["player_id"]), errors="coerce")
+    work["location_x_num"] = pd.to_numeric(_coalesce(work, ["location_x", "x"]), errors="coerce")
+    work["location_y_num"] = pd.to_numeric(_coalesce(work, ["location_y", "y"]), errors="coerce")
+
+    clearance_mask = work["play_pattern_norm"].eq("from corner") & work["event_type_norm"].eq("clearance")
+    clearances = work.loc[clearance_mask].copy()
+    if clearances.empty:
+        return _build_empty_clearance_output()
+
+    if team_id is not None:
+        clearances = clearances[clearances["team_id_num"].eq(float(team_id))]
+    if player_id is not None:
+        clearances = clearances[clearances["player_id_num"].eq(float(player_id))]
+    if clearances.empty:
+        return _build_empty_clearance_output()
+
+    follow_up_pool = work[
+        work["event_type_norm"].isin(_CORNER_CLEARANCE_ACTIONABLE_TYPES)
+        & work["event_index_num"].notna()
+        & work["location_x_num"].notna()
+        & work["location_y_num"].notna()
+    ].copy()
+
+    rows: list[dict[str, Any]] = []
+    ordered = clearances.sort_values(["match_id", "period", "event_index_num", "time_seconds"]).copy()
+    for row in ordered.itertuples(index=False):
+        match_id = getattr(row, "match_id", pd.NA)
+        event_index_num = getattr(row, "event_index_num", pd.NA)
+        time_seconds = getattr(row, "time_seconds", pd.NA)
+        team_id_num = getattr(row, "team_id_num", pd.NA)
+
+        candidates = follow_up_pool[
+            follow_up_pool["match_id"].eq(match_id)
+            & follow_up_pool["event_index_num"].gt(event_index_num)
+            & follow_up_pool["event_index_num"].le(float(event_index_num) + float(next_n_actions))
+            & follow_up_pool["time_seconds"].le(float(time_seconds) + float(follow_up_seconds))
+        ].sort_values(["event_index_num", "time_seconds"])
+
+        if candidates.empty:
+            exit_row = None
+        else:
+            exit_row = candidates.iloc[0]
+
+        exit_x = exit_row["location_x_num"] if exit_row is not None else pd.NA
+        exit_y = exit_row["location_y_num"] if exit_row is not None else pd.NA
+        exit_lane = classify_clearance_exit_lane(exit_y)
+        first_ball_winner = "Unknown"
+        if exit_row is not None and pd.notna(team_id_num) and pd.notna(exit_row["team_id_num"]):
+            first_ball_winner = "Defending team" if float(exit_row["team_id_num"]) == float(team_id_num) else "Attacking team"
+
+        seconds_to_first_action = pd.NA
+        if exit_row is not None and pd.notna(time_seconds) and pd.notna(exit_row["time_seconds"]):
+            seconds_to_first_action = float(exit_row["time_seconds"]) - float(time_seconds)
+
+        rows.append(
+            {
+                "event_id": getattr(row, "event_id", pd.NA),
+                "match_id": match_id,
+                "team_id": team_id_num,
+                "team": _scalar_text(getattr(row, "team_name", pd.NA), default="Unknown"),
+                "player_id": getattr(row, "player_id_num", pd.NA),
+                "player": _scalar_text(getattr(row, "player_name", pd.NA), default="Unknown"),
+                "minute": getattr(row, "minute", pd.NA),
+                "period": getattr(row, "period", pd.NA),
+                "clearance_x": getattr(row, "location_x_num", pd.NA),
+                "clearance_y": getattr(row, "location_y_num", pd.NA),
+                "exit_event_id": exit_row.get("event_id", pd.NA) if exit_row is not None else pd.NA,
+                "exit_team": _scalar_text(exit_row.get("team_name", pd.NA), default="Unknown") if exit_row is not None else pd.NA,
+                "exit_player": _scalar_text(exit_row.get("player_name", pd.NA), default="Unknown") if exit_row is not None else pd.NA,
+                "exit_event_type": _scalar_text(exit_row.get("type_name", pd.NA), default="Unknown") if exit_row is not None else pd.NA,
+                "exit_x": exit_x,
+                "exit_y": exit_y,
+                "exit_lane": exit_lane,
+                "first_ball_winner": first_ball_winner,
+                "seconds_to_first_action": seconds_to_first_action,
+            }
+        )
+
+    if not rows:
+        return _build_empty_clearance_output()
+    return pd.DataFrame(rows, columns=DEFENSIVE_CORNER_CLEARANCE_OUTPUT_COLUMNS)
+
+
+def summarize_defensive_corner_clearances(clearance_df: pd.DataFrame) -> pd.DataFrame:
+    if clearance_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "exit_lane",
+                "clearances",
+                "share_pct",
+                "defending_team_first_ball",
+                "defending_team_first_ball_pct",
+            ]
+        )
+
+    work = clearance_df.copy()
+    lane = work["exit_lane"].astype("string").fillna("Unknown")
+    winner = work["first_ball_winner"].astype("string").fillna("Unknown")
+    grouped = (
+        pd.DataFrame({"exit_lane": lane, "first_ball_winner": winner})
+        .groupby("exit_lane", dropna=False)
+        .agg(
+            clearances=("exit_lane", "size"),
+            defending_team_first_ball=("first_ball_winner", lambda s: int(s.eq("Defending team").sum())),
+        )
+        .reset_index()
+    )
+    total = int(grouped["clearances"].sum())
+    grouped["share_pct"] = grouped["clearances"].div(total).mul(100.0).round(1) if total else 0.0
+    grouped["defending_team_first_ball_pct"] = (
+        grouped["defending_team_first_ball"].div(grouped["clearances"]).mul(100.0).round(1)
+    )
+
+    lane_order = {"Left": 0, "Centre": 1, "Right": 2, "Unknown": 3}
+    grouped["_order"] = grouped["exit_lane"].map(lambda value: lane_order.get(str(value), 99))
+    grouped = grouped.sort_values(["_order", "exit_lane"]).drop(columns="_order")
+    return grouped.reset_index(drop=True)
 
 
 def _value_counts_table(series: pd.Series, name_col: str, value_col: str) -> pd.DataFrame:

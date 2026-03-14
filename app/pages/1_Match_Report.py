@@ -1157,9 +1157,14 @@ def _render_transitions_panel(
     )
 
 
-def _render_set_piece_panel(events: pd.DataFrame, shots_df: pd.DataFrame) -> None:
+def _render_set_piece_panel(
+    events: pd.DataFrame,
+    shots_df: pd.DataFrame,
+    team_id: int | None = None,
+    player_id: int | None = None,
+) -> None:
     del shots_df  # Phase 1 set-piece tactical view is derived from events-only pipeline.
-    render_set_piece_tactical_view(events)
+    render_set_piece_tactical_view(events, context_team_id=team_id, context_player_id=player_id)
 
 
 def _render_more_section() -> None:
@@ -1268,9 +1273,13 @@ elif analysis_view == "Defensive":
     filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     _render_defensive_panel(filtered_events)
 elif analysis_view == "Set Pieces":
-    filtered_events = _apply_team_player_filters(match_events, team_id=selection["team_id"], player_id=selection["player_id"])
     filtered_shots = _apply_team_player_filters(match_shots, team_id=selection["team_id"], player_id=selection["player_id"])
     set_piece_shots = get_shots_view(filtered_shots, dim_team=dim_team, dim_player=dim_player)
-    _render_set_piece_panel(filtered_events, set_piece_shots)
+    _render_set_piece_panel(
+        match_events,
+        set_piece_shots,
+        team_id=selection["team_id"],
+        player_id=selection["player_id"],
+    )
 else:
     _render_more_section()

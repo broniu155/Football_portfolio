@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-14
+- Expanded `Match Report > Set Pieces` with a new `Corner Exits` tactical tab:
+  - Added defensive-corner-clearance extraction from `Clearance` events inside `From Corner` phases.
+  - Added rule-based exit-lane classification (`Left`, `Centre`, `Right`, `Unknown`) using the first post-clearance actionable event with a valid location.
+  - Added percentage summaries so analysts can see where defenders most often clear corners and position rest-defense players accordingly.
+  - Added first-ball-win tracking (`Defending team` vs `Attacking team`) after each clearance.
+- Updated Match Report Set Pieces wiring so the component receives full match context for post-clearance follow-up detection while still respecting the active team/player selection.
+- Added tests covering defensive corner clearance extraction, lane summaries, and corner-exit filter behavior.
+
 ## 2026-03-06
 - Expanded `Match Report > Set Pieces` analyst workflow:
   - Added explicit `restart_event_reason` classification for restart-only rows and Summary reporting.

@@ -5,11 +5,14 @@ import pandas as pd
 from app.components.set_piece_data import (
     SET_PIECE_OUTPUT_COLUMNS,
     classify_corner_side,
+    classify_clearance_exit_lane,
     classify_delivery_subtype,
     classify_free_kick_type,
     classify_target_zone,
     compute_set_piece_sanity_checks,
+    extract_defensive_corner_clearances,
     extract_set_piece_events,
+    summarize_defensive_corner_clearances,
 )
 
 
@@ -17,6 +20,9 @@ class SetPieceDataTests(unittest.TestCase):
     def test_classification_rules(self) -> None:
         self.assertEqual(classify_corner_side(12), "Left")
         self.assertEqual(classify_corner_side(74), "Right")
+        self.assertEqual(classify_clearance_exit_lane(12), "Left")
+        self.assertEqual(classify_clearance_exit_lane(40), "Centre")
+        self.assertEqual(classify_clearance_exit_lane(70), "Right")
         self.assertEqual(classify_target_zone(116, 40), "Six-yard central")
         self.assertEqual(classify_target_zone(110, 22), "Near-post")
         self.assertEqual(classify_target_zone(110, 62), "Far-post")
@@ -256,6 +262,166 @@ class SetPieceDataTests(unittest.TestCase):
         out_without_id = extract_set_piece_events(fallback_dupes, counting_mode="phase_events")
         self.assertEqual(len(out_without_id), 1)
         self.assertTrue(str(out_without_id.iloc[0]["event_key"]).startswith("m:9|idx:25"))
+
+    def test_extract_defensive_corner_clearances_and_lane_summary(self) -> None:
+        events = pd.DataFrame(
+            [
+                {
+                    "event_id": 100,
+                    "match_id": 55,
+                    "event_index": 10,
+                    "team_id": 1,
+                    "team_name": "Alpha",
+                    "player_id": 11,
+                    "player_name": "Corner Taker",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 0,
+                    "location_x": 120,
+                    "location_y": 80,
+                    "pass_end_location_x": 112,
+                    "pass_end_location_y": 36,
+                },
+                {
+                    "event_id": 101,
+                    "match_id": 55,
+                    "event_index": 11,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 21,
+                    "player_name": "Clearer One",
+                    "type_name": "Clearance",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 2,
+                    "location_x": 8,
+                    "location_y": 40,
+                },
+                {
+                    "event_id": 102,
+                    "match_id": 55,
+                    "event_index": 12,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 22,
+                    "player_name": "Pressing Mid",
+                    "type_name": "Pressure",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 3,
+                    "location_x": 11,
+                    "location_y": 38,
+                },
+                {
+                    "event_id": 103,
+                    "match_id": 55,
+                    "event_index": 13,
+                    "team_id": 1,
+                    "team_name": "Alpha",
+                    "player_id": 12,
+                    "player_name": "Recovery Player",
+                    "type_name": "Ball Recovery",
+                    "play_pattern_name": "From Corner",
+                    "period": 1,
+                    "minute": 10,
+                    "second": 5,
+                    "location_x": 96,
+                    "location_y": 16,
+                },
+                {
+                    "event_id": 104,
+                    "match_id": 55,
+                    "event_index": 20,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 23,
+                    "player_name": "Clearer Two",
+                    "type_name": "Clearance",
+                    "play_pattern_name": "From Corner",
+                    "period": 2,
+                    "minute": 48,
+                    "second": 0,
+                    "location_x": 10,
+                    "location_y": 42,
+                },
+                {
+                    "event_id": 105,
+                    "match_id": 55,
+                    "event_index": 21,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 24,
+                    "player_name": "Outlet Passer",
+                    "type_name": "Pass",
+                    "play_pattern_name": "From Corner",
+                    "period": 2,
+                    "minute": 48,
+                    "second": 4,
+                    "location_x": 66,
+                    "location_y": 64,
+                    "pass_end_location_x": 82,
+                    "pass_end_location_y": 60,
+                },
+                {
+                    "event_id": 106,
+                    "match_id": 55,
+                    "event_index": 30,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 25,
+                    "player_name": "Clearer Three",
+                    "type_name": "Clearance",
+                    "play_pattern_name": "From Corner",
+                    "period": 2,
+                    "minute": 60,
+                    "second": 0,
+                    "location_x": 9,
+                    "location_y": 39,
+                },
+                {
+                    "event_id": 107,
+                    "match_id": 55,
+                    "event_index": 31,
+                    "team_id": 2,
+                    "team_name": "Beta",
+                    "player_id": 26,
+                    "player_name": "Bench Player",
+                    "type_name": "Substitution",
+                    "play_pattern_name": "From Corner",
+                    "period": 2,
+                    "minute": 60,
+                    "second": 3,
+                },
+            ]
+        )
+
+        out = extract_defensive_corner_clearances(events, follow_up_seconds=12, next_n_actions=4)
+        self.assertEqual(len(out), 3)
+
+        first = out.iloc[0]
+        self.assertEqual(first["exit_lane"], "Left")
+        self.assertEqual(first["first_ball_winner"], "Attacking team")
+        self.assertEqual(first["exit_event_type"], "Ball Recovery")
+
+        second = out.iloc[1]
+        self.assertEqual(second["exit_lane"], "Right")
+        self.assertEqual(second["first_ball_winner"], "Defending team")
+
+        third = out.iloc[2]
+        self.assertEqual(third["exit_lane"], "Unknown")
+        self.assertEqual(third["first_ball_winner"], "Unknown")
+
+        summary = summarize_defensive_corner_clearances(out)
+        self.assertEqual(summary["clearances"].sum(), 3)
+        left_row = summary[summary["exit_lane"] == "Left"].iloc[0]
+        right_row = summary[summary["exit_lane"] == "Right"].iloc[0]
+        self.assertAlmostEqual(float(left_row["share_pct"]), 33.3, places=1)
+        self.assertEqual(int(right_row["defending_team_first_ball"]), 1)
+        self.assertEqual(float(right_row["defending_team_first_ball_pct"]), 100.0)
 
 
 if __name__ == "__main__":

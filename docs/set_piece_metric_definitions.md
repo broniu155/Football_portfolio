@@ -74,3 +74,29 @@ Scope: corners and free kicks from `fact_events` where `play_pattern_name` is `F
 - Distribution by `side`
 - Distribution by `target_zone`
 - Totals for `linked_shot` and `linked_goal`
+
+## Defensive corner exits
+
+Scope: `Clearance` events where `play_pattern_name == From Corner`.
+
+- `clearance_x`, `clearance_y`: the clearance event location.
+- `exit_x`, `exit_y`:
+  - estimated from the first subsequent actionable event with a valid location
+  - search window defaults: next `6` actions and next `12` seconds
+  - non-ball actions such as `Pressure` are ignored for this estimate
+
+- `exit_lane`:
+  - `Left` if `exit_y < 26.67`
+  - `Centre` if `26.67 <= exit_y <= 53.33`
+  - `Right` if `exit_y > 53.33`
+  - `Unknown` if no valid follow-up location is found
+
+- `first_ball_winner`:
+  - `Defending team` if the first actionable follow-up event is by the clearance team
+  - `Attacking team` if the first actionable follow-up event is by the corner-taking team
+  - `Unknown` if no qualifying follow-up event is found
+
+- Lane summary outputs:
+  - total clearances per lane
+  - `share_pct` of clearances by lane
+  - defending-team first-ball counts and percentages by lane
